@@ -1,3 +1,4 @@
+
 # RAHBAR starter Makefile. `make` or `make help` lists the targets.
 # Targets marked (needs yours) work once you have written the Dockerfiles or manifests.
 
@@ -7,8 +8,9 @@ TAG ?= dev
 PY ?= python3
 VENV ?= .venv
 BIN := $(abspath $(VENV))/bin
-# The Ingress address. On Linux this is the minikube IP. On macOS or Windows with the
-# docker driver, run `minikube tunnel` in another terminal and use INGRESS_IP=127.0.0.1.
+
+# The Ingress address. On Linux this is the minikube IP.
+# With the docker driver, run `minikube tunnel` and use INGRESS_IP=127.0.0.1.
 INGRESS_IP ?= $(shell minikube ip 2>/dev/null)
 HOST ?= rahbar.local
 
@@ -19,21 +21,21 @@ help: ## list the targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  make %-14s %s\n", $$1, $$2}'
 
 install: ## create .venv and install the api, indexer and tool dependencies
-	$(PY) -m venv $(VENV)
-	$(BIN)/pip install -q --upgrade pip
-	$(BIN)/pip install -q -r api/requirements-dev.txt -r indexer/requirements-dev.txt
+	$(PY) -m venv "$(VENV)"
+	"$(BIN)/pip" install -q --upgrade pip
+	"$(BIN)/pip" install -q -r api/requirements-dev.txt -r indexer/requirements-dev.txt
 
 test: ## run the api and indexer tests (stubs only: no cluster, no model, no network)
-	cd api && $(BIN)/pytest -q
-	cd indexer && $(BIN)/pytest -q
+	cd api && "$(BIN)/pytest" -q
+	cd indexer && "$(BIN)/pytest" -q
 
 lint: ## ruff and mypy over everything in Python
-	$(BIN)/ruff check api indexer eval corpus
-	cd api && $(BIN)/mypy app
-	cd indexer && $(BIN)/mypy pipeline
+	"$(BIN)/ruff" check api indexer eval corpus
+	cd api && "$(BIN)/mypy" app
+	cd indexer && "$(BIN)/mypy" pipeline
 
 dev: ## run the API with stubs on http://localhost:8000, serving the chat UI too
-	cd api && SERVE_UI_DIR=../ui RETRIEVER=stub LLM_PROVIDER=stub $(BIN)/uvicorn app.main:app --reload --port 8000
+	cd api && SERVE_UI_DIR=../ui RETRIEVER=stub LLM_PROVIDER=stub "$(BIN)/uvicorn" app.main:app --reload --port 8000
 
 cluster: ## start minikube with Calico, then enable metrics-server and ingress
 	minikube start --driver=docker --cni=calico --memory=6144 --cpus=4
@@ -66,13 +68,13 @@ ask: ## ask through the Ingress: make ask Q="What CGPA puts a student on academi
 	  | $(PY) -m json.tool
 
 fetch: ## download the documents listed in corpus/sources.yaml
-	$(BIN)/python corpus/fetch.py
+	"$(BIN)/python" corpus/fetch.py
 
 eval: ## score eval/golden.yaml through the Ingress and apply the CI gate
-	$(BIN)/python eval/run_eval.py --api "http://$(INGRESS_IP)" --host $(HOST)
+	"$(BIN)/python" eval/run_eval.py --api "http://$(INGRESS_IP)" --host $(HOST)
 
 eval-fixtures: ## score the CI fixture golden set against a local `make dev`
-	$(BIN)/python eval/run_eval.py --api http://localhost:8000 --golden eval/fixtures/golden.fixture.yaml --out /tmp/rahbar-fixture-results.json
+	"$(BIN)/python" eval/run_eval.py --api http://localhost:8000 --golden eval/fixtures/golden.fixture.yaml --out /tmp/rahbar-fixture-results.json
 
 check: ## run the submission checker
 	$(PY) scripts/check_submission.py
