@@ -17,6 +17,7 @@ spec:
       restartPolicy: OnFailure
       serviceAccountName: indexer
       automountServiceAccountToken: false
+      enableServiceLinks: false          # nothing here uses Service env vars; pods find each other by DNS name
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001

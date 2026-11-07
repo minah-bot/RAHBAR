@@ -19,6 +19,10 @@ spec:
     spec:
       serviceAccountName: chroma
       automountServiceAccountToken: false
+      # Kubernetes injects env vars for every Service into every pod; for the Service named 'chroma' that
+      # includes CHROMA_PORT=tcp://<ip>:8000, and the Rust server reads every CHROMA_* variable as config
+      # ("expected u16 for key PORT"). Nothing here uses Service env vars: pods find each other by DNS name.
+      enableServiceLinks: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000

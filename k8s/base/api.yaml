@@ -17,6 +17,7 @@ spec:
     spec:
       serviceAccountName: api
       automountServiceAccountToken: false
+      enableServiceLinks: false          # nothing here uses Service env vars; pods find each other by DNS name
       terminationGracePeriodSeconds: 45     # > preStop sleep + the slowest in-flight generation we tolerate
       securityContext:
         runAsNonRoot: true
