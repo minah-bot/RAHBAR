@@ -28,16 +28,14 @@ spec:
       containers:
         - name: chroma
           image: chromadb/chroma:1.0.12     # same version as chromadb-client in requirements.txt
-          # The image's default CMD passes --reload (a development file watcher); production does not.
-          # --log-config points at our stdout-only copy (chroma-logconfig.yaml): the stock one writes
-          # chroma.log into a root-owned working directory, which a non-root pod cannot do.
-          args: ["--workers", "1", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers",
-                 "--log-config", "/config/log_config.yml", "--timeout-keep-alive", "30"]
+          # chromadb/chroma:1.0.12 is the Rust server: its entrypoint is `chroma` and its default
+          # command is `run /config.yaml`, where /config.yaml sets persist_path: /data and the server
+          # listens on 0.0.0.0:8000. The Python/uvicorn flags (--workers, --reload, --log-config) are
+          # rejected by this binary ("unexpected argument '--workers'", exit code 2).
+          args: ["run", "/config.yaml"]
           ports:
             - {name: http, containerPort: 8000}
           env:
-            - {name: IS_PERSISTENT, value: "TRUE"}
-            - {name: PERSIST_DIRECTORY, value: /data}
             - {name: ANONYMIZED_TELEMETRY, value: "FALSE"}
             - {name: HOME, value: /tmp}
             - {name: PYTHONDONTWRITEBYTECODE, value: "1"}
@@ -69,10 +67,8 @@ spec:
           volumeMounts:
             - {name: data, mountPath: /data}
             - {name: tmp, mountPath: /tmp}
-            - {name: logconfig, mountPath: /config, readOnly: true}
       volumes:
         - {name: tmp, emptyDir: {}}
-        - {name: logconfig, configMap: {name: chroma-logconfig}}
   volumeClaimTemplates:
     - metadata:
         name: data
