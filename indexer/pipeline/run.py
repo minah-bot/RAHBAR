@@ -70,16 +70,33 @@ def run_pipeline(settings: IndexerSettings) -> int:
     from .extract import extract
     from .store import store
 
+    from .tokens import count
+
     documents = discover(settings.corpus_dir)
     if not documents:
         raise SystemExit(f"no documents found in {settings.corpus_dir}")
     all_chunks: list[Chunk] = []
+    original_tokens = 0
     for path, doc_version, superseded in documents:
         doc = clean(extract(str(path), doc_version, superseded))
-        pieces = chunk(doc, settings.chunk_size, settings.chunk_overlap)
-        log("chunked", source=path.name, chunks=len(pieces))
+        original_tokens += sum(count(p.text) for p in doc.pages)
+        if os.environ.get("CHUNK_STRATEGY", "structure") == "fixed":   # Stage B experiment only
+            from .chunk import chunk_fixed
+
+            pieces = chunk_fixed(doc, settings.chunk_size)
+        else:
+            pieces = chunk(doc, settings.chunk_size, settings.chunk_overlap)
+        ocr_pages = [p.page for p in doc.pages if p.ocr]
+        log("chunked", source=path.name, pages=len(doc.pages), chunks=len(pieces),
+            ocr_pages=len(ocr_pages), empty_pages=sum(1 for p in doc.pages if not p.text.strip()),
+            doc_version=doc_version, superseded=superseded)
         all_chunks.extend(pieces)
-    vectors = embed([c.text for c in all_chunks], settings)
+    stored_tokens = sum(count(c.text) for c in all_chunks)
+    log("chunking summary", chunks=len(all_chunks), original_tokens=original_tokens,
+        stored_tokens=stored_tokens,
+        amplification=round(stored_tokens / max(original_tokens, 1), 3),
+        chunk_size=settings.chunk_size, chunk_overlap=settings.chunk_overlap)
+    vectors = embed([c.embed_text() for c in all_chunks], settings)
     return store(all_chunks, vectors, settings)
 
 

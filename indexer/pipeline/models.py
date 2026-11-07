@@ -33,6 +33,11 @@ class Chunk:
     doc_version: str
     superseded: bool
 
+    def embed_text(self) -> str:
+        """What gets embedded: the section heading in front of the body. The heading carries
+        clause numbers and topic words that the body alone may not repeat."""
+        return f"{self.section}\n{self.text}"
+
     def metadata(self) -> dict[str, str | int | bool]:
         """Chroma metadata values must be str, int, float or bool."""
         return {

@@ -1,0 +1,108 @@
+name: cd
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cd-main
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install -r api/requirements-dev.txt -r indexer/requirements-dev.txt
+      - run: ruff check api indexer eval corpus
+      - run: cd api && pytest -q --cov=app --cov-fail-under=60
+      - run: cd indexer && pytest -q
+
+  build-push:
+    needs: test                       # never publish an image built from code that failed its tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image: [api, indexer, ui]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}     # an access token, never the password
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.image }}
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/rahbar-${{ matrix.image }}:${{ github.sha }}
+          build-args: GIT_SHA=${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+  deploy:
+    needs: build-push                 # an ephemeral cluster running exactly the pushed SHA images
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - name: start the fake model on the host
+        run: |
+          nohup python eval/fake_ollama.py --port 11500 > fake-ollama.log 2>&1 &
+          for _ in $(seq 1 20); do curl -sf localhost:11500/ && break; sleep 1; done
+      - name: kind cluster with an ingress-ready node
+        run: |
+          cat > kind.yaml <<'KIND'
+          kind: Cluster
+          apiVersion: kind.x-k8s.io/v1alpha4
+          nodes:
+            - role: control-plane
+              kubeadmConfigPatches:
+                - |
+                  kind: InitConfiguration
+                  nodeRegistration:
+                    kubeletExtraArgs:
+                      node-labels: "ingress-ready=true"
+              extraPortMappings:
+                - {containerPort: 80, hostPort: 80, protocol: TCP}
+          KIND
+      - uses: helm/kind-action@v1
+        with: {cluster_name: kind, config: kind.yaml}
+      - name: ingress controller
+        run: |
+          kubectl apply -f https://kind.sigs.k8s.io/examples/ingress/deploy-ingress-nginx.yaml
+          kubectl wait -n ingress-nginx --for=condition=ready pod -l app.kubernetes.io/component=controller --timeout=180s
+      - name: deploy the SHA-tagged images and wait for the rollout
+        env:
+          REGISTRY_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          TAG: ${{ github.sha }}
+        run: |
+          curl -sfL https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz | tar xz
+          sudo mv kustomize /usr/local/bin/
+          scripts/kind_deploy.sh
+      - name: wait for the rollout of the SHA-tagged images
+        run: |
+          kubectl rollout status deployment/api -n rahbar --timeout=180s
+          kubectl rollout status deployment/ui -n rahbar --timeout=120s
+      - name: smoke test through the Ingress
+        run: |
+          set -e
+          curl -sf -H 'Host: rahbar.local' http://localhost/ | grep -qi "<html"
+          resp=$(curl -sf -H 'Host: rahbar.local' -H 'Content-Type: application/json' \
+            -X POST http://localhost/api/ask -d '{"question":"When is a student placed on academic warning?"}')
+          echo "$resp"
+          echo "$resp" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["answered_from_context"] and d["citations"], d'
+      - name: what is running
+        run: kubectl get deploy -n rahbar -o wide
+      - name: diagnostics on failure
+        if: failure()
+        run: |
+          kubectl get all -n rahbar || true
+          kubectl describe pods -n rahbar | tail -120 || true
+          kubectl logs deploy/api -n rahbar --tail=80 || true

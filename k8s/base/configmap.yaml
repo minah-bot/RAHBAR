@@ -1,0 +1,33 @@
+# Every knob that changes behaviour lives here, not in an image (Lecture 04).
+# EMBED_MODEL is read by BOTH the indexer and the api; the api refuses to become ready if the
+# index was built with a different one (section 4.4).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rahbar-config
+  namespace: rahbar
+data:
+  EMBED_MODEL: "nomic-embed-text"
+  LLM_PROVIDER: "ollama-host"
+  LLM_MODEL: "llama3.2:3b"
+  OLLAMA_URL: "http://host.minikube.internal:11434"   # embeddings come from here too
+  RETRIEVER: "chroma"
+  CHROMA_HOST: "chroma"
+  CHROMA_PORT: "8000"
+  CHROMA_COLLECTION: "rahbar"
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+  CACHE_ENABLED: "true"
+  # tokens (regex words/punctuation); chosen from the sweep in docs/PIPELINE.md
+  CHUNK_SIZE: "400"
+  CHUNK_OVERLAP: "50"
+  TOP_K: "5"
+  # best-passage cosine similarity below this means "the corpus does not cover it". Tuned on the golden set.
+  RELEVANCE_FLOOR: "0.55"
+  # cosine similarity needed for a cache hit. Tuned with eval/tune_cache.py.
+  CACHE_THRESHOLD: "0.95"
+  # 0.1: facts and JSON want near-deterministic output; 0 is not used because it does not
+  # remove hallucination (absent knowledge stays absent) and some models loop at exactly 0.
+  TEMPERATURE: "0.1"
+  LLM_TIMEOUT: "90"
+  LOG_LEVEL: "INFO"

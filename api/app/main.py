@@ -14,13 +14,16 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import get_settings
 from .logjson import configure_logging, request_id_var
 from .providers.llm import get_provider
 from .retrieval import get_retriever
+from .retrieval.index import IndexNotReady
 from .routes import ask, health, metrics
+from .services.cache import SemanticCache, connect
 
 log = logging.getLogger("rahbar.api")
 
@@ -32,8 +35,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.settings = settings
     app.state.retriever = get_retriever(settings)
     app.state.provider = get_provider(settings)
-    # Readiness compares the collection's model metadata with this runtime pin.
-    # This process only reads the index. The separately run indexer writes it.
+    # This process only reads the index; the indexer Job writes it (ADR 0001). The embedding
+    # pin (EMBED_MODEL vs the collection's metadata) is enforced by /readyz and by retrieve().
+    app.state.cache = (
+        SemanticCache(connect(settings.redis_host, settings.redis_port),
+                      settings.cache_threshold, settings.cache_ttl_seconds)
+        if settings.cache_enabled else None
+    )
     log.info(
         "api started",
         extra={"retriever": settings.retriever, "llm_provider": settings.llm_provider,
@@ -43,6 +51,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="RAHBAR API", lifespan=lifespan)
+
+
+@app.exception_handler(IndexNotReady)
+async def handle_index_unavailable(request: Request, exc: IndexNotReady) -> JSONResponse:
+    """A dependency is down: say so with a 503, never a bare 500."""
+    return JSONResponse(status_code=503, content={"detail": exc.detail, "failed": exc.dependency})
 
 
 @app.middleware("http")

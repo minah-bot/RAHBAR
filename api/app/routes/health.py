@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Request, Response
 
+from ..retrieval.index import IndexNotReady
+
 router = APIRouter()
+log = logging.getLogger("rahbar.health")
 
 
 @router.get("/healthz")
@@ -15,41 +20,23 @@ def healthz() -> dict[str, str]:
 
 @router.get("/readyz")
 def readyz(request: Request, response: Response) -> dict[str, object]:
-    settings = request.app.state.settings
+    """Can this pod take traffic? 200 only if Chroma is reachable, the collection exists and
+    is non-empty, the embedding model matches the index, and Redis is reachable. Otherwise
+    503 naming the dependency that failed, so `kubectl describe` shows why it is 0/1."""
+    state = request.app.state
     checks: dict[str, object] = {}
-    failures: list[str] = []
-    if settings.retriever == "chroma":
-        try:
-            collection = request.app.state.retriever.collection
-            count = collection.count()
-            metadata = collection.metadata or {}
-            checks["chroma"] = {"reachable": True, "count": count}
-            if count == 0:
-                failures.append("chroma collection is empty")
-            if metadata.get("embed_model") != settings.embed_model:
-                checks["embedding_model"] = {"expected": settings.embed_model,
-                                              "indexed": metadata.get("embed_model")}
-                failures.append("embedding model does not match index")
-            else:
-                checks["embedding_model"] = "matched"
-        except Exception as exc:
-            checks["chroma"] = {"reachable": False, "error": str(exc)}
-            failures.append("chroma unavailable")
-    else:
-        checks["retriever"] = "stub"
-    if settings.redis_url:
-        try:
-            import redis
-
-            redis.Redis.from_url(settings.redis_url, socket_connect_timeout=0.5,
-                                 socket_timeout=0.5).ping()
-            checks["redis"] = "reachable"
-        except Exception as exc:
-            checks["redis"] = {"reachable": False, "error": str(exc)}
-            failures.append("redis unavailable")
-    else:
-        checks["redis"] = "disabled"
-    if failures:
+    try:
+        check = getattr(state.retriever, "check_ready", None)   # tolerate plain retrievers
+        checks["index"] = check() if check else {"retriever": state.retriever.name}
+        if state.cache is not None:
+            try:
+                state.cache.ping()
+            except Exception as exc:
+                raise IndexNotReady("redis", f"redis unreachable: {exc!r}") from exc
+            checks["redis"] = "ok"
+    except IndexNotReady as exc:
         response.status_code = 503
-        return {"status": "not_ready", "checks": checks, "errors": failures}
+        log.warning("not ready", extra={"dependency": exc.dependency, "detail": exc.detail})
+        return {"status": "not ready", "failed": exc.dependency, "detail": exc.detail,
+                "checks_passed": len(checks)}
     return {"status": "ready", "checks": checks}
