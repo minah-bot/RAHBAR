@@ -92,6 +92,13 @@ def load_sources() -> list[dict]:
     return docs
 
 
+def _extra(doc: dict) -> dict:
+    """Optional per-document indexing hints from sources.yaml, passed through to _index.json.
+    `exclude_pages: [1, 2, 3]` leaves a table of contents or cover out of the index."""
+    pages = doc.get("exclude_pages")
+    return {"exclude_pages": [int(p) for p in pages]} if isinstance(pages, list) else {}
+
+
 def fetch(force: bool) -> int:
     docs = load_sources()
     RAW.mkdir(exist_ok=True)
@@ -107,7 +114,8 @@ def fetch(force: bool) -> int:
             if old and not force and (RAW / old["file"]).exists() and old["url"] == url:
                 print(f"  have    {old['file']}")
                 entries.append({**old, "doc_version": doc.get("doc_version", "unknown"),
-                                "superseded": bool(doc.get("superseded", False))})
+                                "superseded": bool(doc.get("superseded", False)),
+                                **_extra(doc)})
                 continue
             print(f"  fetch   {name}")
             try:
@@ -127,6 +135,7 @@ def fetch(force: bool) -> int:
                     "fetched_at": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
                     "doc_version": doc.get("doc_version", "unknown"),
                     "superseded": bool(doc.get("superseded", False)),
+                    **_extra(doc),
                 })
                 print(f"          {file}, {len(response.content):,} bytes")
             except Exception as exc:  # report every failure, keep going

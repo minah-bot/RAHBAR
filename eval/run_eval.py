@@ -7,8 +7,8 @@
 
 Exit code 0 when every gate passes, 1 when any fails. CI relies on that exit code.
 
-The runner talks to the API, reads the golden set, writes results.json, and exits
-non-zero when the evaluation gate fails.
+Talking to the API, reading the golden set, writing results.json and the exit code are the
+harness; the four functions recall_at_k, citation_validity, summarise and gate are the evaluation.
 """
 
 from __future__ import annotations
@@ -35,6 +35,13 @@ def load_golden(path: Path) -> list[dict]:
     questions = data.get("questions") or []
     if not questions:
         sys.exit(f"no questions in {path}")
+    # A golden set with holes gives a flattering number that means nothing (section 5.1).
+    unfinished = [q["id"] for q in questions
+                  if q.get("type", "ordinary") in ("ordinary", "version", "exact")
+                  and not q.get("relevant")]
+    if unfinished:
+        sys.exit(f"{path}: questions without `relevant` passages: {', '.join(unfinished)}. "
+                 "Fill them in (python eval/find_sections.py helps) before running the eval.")
     return questions
 
 
@@ -45,69 +52,130 @@ def ask(client: httpx.Client, api: str, question: str) -> dict:
     return response.json()
 
 
+def _norm(text: str) -> str:
+    return " ".join(str(text).lower().split())
+
+
+def section_matches(golden_section: str, retrieved_section: str) -> bool:
+    """A golden section matches a retrieved one when they are equal, or when the golden one is
+    a clause-number prefix of it: golden "5.4" matches "5.4 Academic Warning" and "5.4.1 ...",
+    but not "5.40". Case and whitespace are ignored. Documented in docs/PIPELINE.md."""
+    g, r = _norm(golden_section), _norm(retrieved_section)
+    if g == r:
+        return True
+    return r.startswith(g) and not r[len(g)].isalnum()
+
+
+def _hit(rel: dict, ref: dict) -> bool:
+    return _norm(rel["source"]) == _norm(ref.get("source", "")) and section_matches(
+        rel["section"], ref.get("section", ""))
+
+
 def recall_at_k(relevant: list[dict], retrieved: list[dict], k: int) -> float | None:
     """Fraction of the relevant (source, section) pairs found in the top k retrieved.
     Return None when the question has no relevant passages (must-abstain questions)."""
     if not relevant:
         return None
-    wanted = {(str(x.get("source", "")).casefold(), str(x.get("section", "")).casefold())
-              for x in relevant}
-    found = {(str(x.get("source", "")).casefold(), str(x.get("section", "")).casefold())
-             for x in retrieved[:max(0, k)]}
-    return len(wanted & found) / len(wanted)
+    top = retrieved[:k]
+    found = sum(1 for rel in relevant if any(_hit(rel, ref) for ref in top))
+    return found / len(relevant)
+
+
+def citation_counts(response: dict) -> tuple[int, int]:
+    """(valid, total) citations: valid means it names a (source, section) that was retrieved."""
+    retrieved = {(_norm(r["source"]), _norm(r["section"])) for r in response.get("retrieved", [])}
+    cites = response.get("citations") or []
+    valid = sum(1 for c in cites if (_norm(c["source"]), _norm(c["section"])) in retrieved)
+    return valid, len(cites)
 
 
 def citation_validity(response: dict) -> float | None:
     """Fraction of the response's citations that match a passage in response['retrieved'].
     Return None when there are no citations."""
-    citations = response.get("citations") or []
-    if not citations:
-        return None
-    retrieved = {(str(x.get("source", "")).casefold(), str(x.get("section", "")).casefold())
-                 for x in response.get("retrieved", [])}
-    return sum((str(c.get("source", "")).casefold(), str(c.get("section", "")).casefold())
-               in retrieved for c in citations) / len(citations)
+    valid, total = citation_counts(response)
+    return valid / total if total else None
+
+
+def _mean(values: list[float]) -> float | None:
+    return round(sum(values) / len(values), 4) if values else None
 
 
 def summarise(rows: list[dict]) -> dict:
     """Overall recall@3, recall@5, citation validity and abstention correctness, plus
     recall@5 broken down by question type. This dict becomes results.json."""
-    def mean(values: list[float]) -> float | None:
-        return sum(values) / len(values) if values else None
-
-    recalls = {k: [value for row in rows
-                   if (value := recall_at_k(row.get("relevant", []),
-                                            row["response"].get("retrieved", []), k)) is not None]
-               for k in (3, 5)}
-    citations = [value for row in rows
-                 if (value := citation_validity(row["response"])) is not None]
-    abstain_rows = [row for row in rows if row.get("must_abstain")]
-    abstention = (sum(not row["response"].get("answered_from_context", False)
-                      for row in abstain_rows) / len(abstain_rows)) if abstain_rows else None
-    by_type: dict[str, float | None] = {}
-    for kind in sorted({str(row.get("type", "ordinary")) for row in rows}):
-        values = [recall_at_k(row.get("relevant", []), row["response"].get("retrieved", []), 5)
-                  for row in rows if row.get("type", "ordinary") == kind]
-        by_type[kind] = mean([v for v in values if v is not None])
-    return {"recall_at_3": mean(recalls[3]), "recall_at_5": mean(recalls[5]),
-            "citation_validity": mean(citations), "abstention_correctness": abstention,
-            "recall_at_5_by_type": by_type,
-            "must_abstain_questions": len(abstain_rows), "rows": len(rows)}
+    r3: list[float] = []
+    r5: list[float] = []
+    by_type: dict[str, list[float]] = {}
+    valid = total = 0
+    answered_rows = grounded_without_citation = 0
+    abstain_rows = abstain_ok = 0
+    answerable = answerable_answered = 0
+    expect_rows = expect_hits = 0
+    per_question = []
+    for row in rows:
+        resp = row["response"]
+        retrieved = resp.get("retrieved", [])
+        a3 = recall_at_k(row["relevant"], retrieved, 3)
+        a5 = recall_at_k(row["relevant"], retrieved, 5)
+        by_type.setdefault(row["type"], [])      # a type with no relevant passages reports None
+        if a3 is not None and a5 is not None:
+            r3.append(a3)
+            r5.append(a5)
+            by_type[row["type"]].append(a5)
+        v, t = citation_counts(resp)
+        valid, total = valid + v, total + t
+        if resp.get("answered_from_context"):
+            answered_rows += 1
+            grounded_without_citation += 0 if resp.get("citations") else 1
+        if row["must_abstain"]:
+            abstain_rows += 1
+            abstain_ok += 0 if resp.get("answered_from_context") else 1
+        else:
+            answerable += 1
+            answerable_answered += 1 if resp.get("answered_from_context") else 0
+        if row.get("expect") and not row["must_abstain"]:
+            expect_rows += 1
+            expect_hits += 1 if _norm(row["expect"]) in _norm(resp.get("answer", "")) else 0
+        per_question.append({
+            "id": row.get("id"), "type": row["type"], "recall_at_5": a5,
+            "answered_from_context": resp.get("answered_from_context"),
+            "must_abstain": row["must_abstain"], "citations_valid": f"{v}/{t}",
+            "seconds": row.get("seconds")})
+    seconds = sorted(r["seconds"] for r in rows if r.get("seconds") is not None)
+    return {
+        "recall_at_3": _mean(r3),
+        "recall_at_5": _mean(r5),
+        "recall_at_5_by_type": {k: _mean(v) for k, v in sorted(by_type.items())},
+        "citation_validity": round(valid / total, 4) if total else 1.0,
+        "citations_checked": total,
+        "grounded_answers_without_citation": grounded_without_citation,
+        "abstention_correctness": round(abstain_ok / abstain_rows, 4) if abstain_rows else 1.0,
+        "must_abstain_questions": abstain_rows,
+        "answer_rate_on_answerable": round(answerable_answered / answerable, 4) if answerable
+        else None,
+        "expect_hit_rate": round(expect_hits / expect_rows, 4) if expect_rows else None,
+        "latency_seconds_p50": seconds[len(seconds) // 2] if seconds else None,
+        "latency_seconds_p95": seconds[min(len(seconds) - 1, int(len(seconds) * 0.95))]
+        if seconds else None,
+        "per_question": per_question,
+    }
 
 
 def gate(results: dict, baseline: dict | None) -> list[str]:
     """Return one message per failed gate (section 5.4); an empty list means pass."""
     failures: list[str] = []
-    citation = results.get("citation_validity")
-    if citation is None or citation < MIN_CITATION_VALIDITY:
-        failures.append(f"citation validity {citation} is below {MIN_CITATION_VALIDITY}")
-    if results.get("must_abstain_questions", 0) and results.get("abstention_correctness") != REQUIRED_ABSTENTION:
-        failures.append(f"must-abstain correctness {results.get('abstention_correctness')} is below {REQUIRED_ABSTENTION}")
-    if baseline is not None:
-        old = baseline.get("recall_at_5")
-        current = results.get("recall_at_5")
-        if old is not None and current is not None and current < old - MAX_RECALL5_DROP:
-            failures.append(f"recall@5 {current:.3f} dropped more than {MAX_RECALL5_DROP:.3f} from baseline {old:.3f}")
+    r5 = results.get("recall_at_5")
+    if baseline is not None and r5 is not None and baseline.get("recall_at_5") is not None \
+            and r5 < baseline["recall_at_5"] - MAX_RECALL5_DROP:
+        failures.append(f"recall@5 {r5:.3f} is more than {MAX_RECALL5_DROP:.0%} below the "
+                        f"baseline {baseline['recall_at_5']:.3f}")
+    if results.get("abstention_correctness", 1.0) < REQUIRED_ABSTENTION:
+        bad = [q["id"] for q in results.get("per_question", [])
+               if q["must_abstain"] and q["answered_from_context"]]
+        failures.append(f"must-abstain question(s) answered from context: {', '.join(bad)}")
+    if results.get("citation_validity", 1.0) < MIN_CITATION_VALIDITY:
+        failures.append(f"citation validity {results['citation_validity']:.3f} is below "
+                        f"{MIN_CITATION_VALIDITY:.0%}")
     return failures
 
 
@@ -147,7 +215,10 @@ def main() -> int:
         print(f"\nnot implemented yet: {exc}")
         return 2
 
-    results["golden"] = str(args.golden)
+    try:
+        results["golden"] = str(args.golden.resolve().relative_to(HERE.parent))
+    except ValueError:
+        results["golden"] = args.golden.name
     results["questions"] = len(rows)
     args.out.write_text(json.dumps(results, indent=2), encoding="utf-8")
     print(f"\nresults written to {args.out}")

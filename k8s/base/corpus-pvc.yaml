@@ -1,0 +1,12 @@
+# The documents the indexer reads. Filled from your laptop with `make corpus-load`, so a changed
+# document needs a re-index (a Job), not an image rebuild.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: corpus
+  namespace: rahbar
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi

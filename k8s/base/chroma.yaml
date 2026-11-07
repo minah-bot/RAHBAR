@@ -1,0 +1,91 @@
+# A StatefulSet, not a Deployment: Chroma owns one volume, and a Deployment's rolling update
+# would run the new pod beside the old one on the same PVC. A StatefulSet gives a stable
+# identity (chroma-0) and its own PVC through volumeClaimTemplates that survives pod
+# deletion. One replica: Chroma's single-node mode is not clustered. (ARCHITECTURE.md)
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: chroma
+  namespace: rahbar
+  labels: {app: chroma}
+spec:
+  serviceName: chroma
+  replicas: 1
+  selector:
+    matchLabels: {app: chroma}
+  template:
+    metadata:
+      labels: {app: chroma}
+    spec:
+      serviceAccountName: chroma
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: chroma
+          image: chromadb/chroma:1.0.12     # same version as chromadb-client in requirements.txt
+          # chromadb/chroma:1.0.12 is the Rust server: its entrypoint is `chroma` and its default
+          # command is `run /config.yaml`, where /config.yaml sets persist_path: /data and the server
+          # listens on 0.0.0.0:8000. The Python/uvicorn flags (--workers, --reload, --log-config) are
+          # rejected by this binary ("unexpected argument '--workers'", exit code 2).
+          args: ["run", "/config.yaml"]
+          ports:
+            - {name: http, containerPort: 8000}
+          env:
+            - {name: ANONYMIZED_TELEMETRY, value: "FALSE"}
+            - {name: HOME, value: /tmp}
+            - {name: PYTHONDONTWRITEBYTECODE, value: "1"}
+          startupProbe:
+            httpGet: {path: /api/v2/heartbeat, port: http}
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet: {path: /api/v2/heartbeat, port: http}
+            periodSeconds: 20
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: {path: /api/v2/heartbeat, port: http}
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: tmp, emptyDir: {}}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: chroma
+  namespace: rahbar
+  labels: {app: chroma}
+spec:
+  type: ClusterIP
+  selector: {app: chroma}
+  ports:
+    - {name: http, port: 8000, targetPort: http}
