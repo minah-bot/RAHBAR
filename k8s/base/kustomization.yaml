@@ -5,6 +5,7 @@ resources:
   - serviceaccounts.yaml
   - configmap.yaml
   - corpus-pvc.yaml
+  - chroma-logconfig.yaml
   - chroma.yaml
   - redis.yaml
   - api.yaml

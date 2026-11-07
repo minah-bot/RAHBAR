@@ -29,8 +29,10 @@ spec:
         - name: chroma
           image: chromadb/chroma:1.0.12     # same version as chromadb-client in requirements.txt
           # The image's default CMD passes --reload (a development file watcher); production does not.
+          # --log-config points at our stdout-only copy (chroma-logconfig.yaml): the stock one writes
+          # chroma.log into a root-owned working directory, which a non-root pod cannot do.
           args: ["--workers", "1", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers",
-                 "--log-config", "chromadb/log_config.yml", "--timeout-keep-alive", "30"]
+                 "--log-config", "/config/log_config.yml", "--timeout-keep-alive", "30"]
           ports:
             - {name: http, containerPort: 8000}
           env:
@@ -67,8 +69,10 @@ spec:
           volumeMounts:
             - {name: data, mountPath: /data}
             - {name: tmp, mountPath: /tmp}
+            - {name: logconfig, mountPath: /config, readOnly: true}
       volumes:
         - {name: tmp, emptyDir: {}}
+        - {name: logconfig, configMap: {name: chroma-logconfig}}
   volumeClaimTemplates:
     - metadata:
         name: data
