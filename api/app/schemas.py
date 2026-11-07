@@ -10,12 +10,20 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class AskRequest(BaseModel):
     question: str = Field(min_length=3, max_length=500)
     follow_up: bool = False   # follow-ups skip the cache and are never stored in it (3.3)
+
+    @field_validator("question")
+    @classmethod
+    def question_must_contain_text(cls, value: str) -> str:
+        value = value.strip()
+        if len(value) < 3:
+            raise ValueError("question must contain at least three non-whitespace characters")
+        return value
 
 
 class Passage(BaseModel):
@@ -26,7 +34,7 @@ class Passage(BaseModel):
     source: str
     section: str
     page: int | None = None
-    score: float = Field(description="Similarity, higher is closer (1 - cosine distance).")
+    score: float = Field(description="Relevance, higher is closer: cosine similarity blended with exact-term overlap.")
     doc_version: str = ""        # lets the prompt label an older version as such
     superseded: bool = False
 

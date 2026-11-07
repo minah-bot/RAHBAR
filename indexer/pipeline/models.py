@@ -21,11 +21,12 @@ class Document:
     doc_version: str         # e.g. "2026-06"; from corpus/sources.yaml
     superseded: bool         # True for an older version of a policy
     pages: list[Page] = field(default_factory=list)
+    identity: str = ""       # corpus-relative identity; two files named handbook.md stay distinct
 
 
 @dataclass
 class Chunk:
-    id: str                  # stable: same document + same position gives the same id
+    id: str                  # stable: same document, position and content give the same id
     text: str
     source: str
     section: str             # the heading this chunk sits under, e.g. "5.4 Academic Warning"

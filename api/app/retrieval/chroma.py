@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from typing import Any
@@ -13,6 +14,9 @@ from ..schemas import Passage
 from .index import POINTER_SUFFIX, IndexInfo, IndexNotReady, pin_conflicts
 
 log = logging.getLogger("rahbar.retrieval")
+
+_WORDS = re.compile(r"\w+(?:[.-]\w+)*")
+_YEARS = re.compile(r"\b(?:19|20)\d{2}\b")
 
 
 class ChromaRetriever:
@@ -26,6 +30,7 @@ class ChromaRetriever:
         self.embedder = embedder or OllamaEmbedder(settings)
         self.client = chromadb.HttpClient(host=settings.chroma_host, port=settings.chroma_port,
                                           settings=ChromaSettings(anonymized_telemetry=False))
+        self._versions: tuple[str, tuple[str, ...]] | None = None   # (index_id, doc_versions)
         self._info: IndexInfo | None = None
         self._info_at = 0.0
         self._lock = threading.Lock()
@@ -106,29 +111,69 @@ class ChromaRetriever:
         if problems:
             raise IndexNotReady("embedding-pin", "; ".join(problems))
 
-        where: dict[str, Any] | None = None if include_superseded else {"superseded": False}
+        where = self._where(question, info, include_superseded)
+        if where == {}:                 # an explicit year with no document of that year
+            return []
         try:
             col = self.client.get_collection(info.collection)
             query_embeddings: Any = [vector]
-            res = col.query(query_embeddings=query_embeddings, n_results=k, where=where,
+            res = col.query(query_embeddings=query_embeddings,
+                            n_results=max(1, min(max(k * 3, k), info.count)), where=where,
                             include=["documents", "metadatas", "distances"])
         except Exception as exc:
             raise IndexNotReady("chroma", f"chroma query failed: {exc!r}") from exc
 
-        passages: list[Passage] = []
+        # Exact identifiers and numbers ("5.4", "PKR 3,000") blur in embeddings, so blend the
+        # semantic score with the share of the question's terms found verbatim in the chunk.
+        weight = min(max(self.settings.lexical_weight, 0.0), 1.0)
+        terms = set(_WORDS.findall(question.casefold()))
         ids = (res.get("ids") or [[]])[0]
         docs = (res.get("documents") or [[]])[0]
         metas = (res.get("metadatas") or [[]])[0]
         dists = (res.get("distances") or [[]])[0]
+        ranked: list[Passage] = []
         for chunk_id, text, meta, dist in zip(ids, docs, metas, dists, strict=False):
             meta = meta or {}
+            similarity = max(0.0, min(1.0, 1.0 - float(dist)))      # Chroma returns cosine distance
+            lexical = len(terms & set(_WORDS.findall((text or "").casefold()))) / max(1, len(terms))
             page = meta.get("page")
-            passages.append(Passage(
+            ranked.append(Passage(
                 chunk_id=chunk_id, text=text or "", source=str(meta.get("source", "")),
                 section=str(meta.get("section", "")),
                 page=int(page) if isinstance(page, int | float) else None,
-                score=round(1.0 - float(dist), 4),   # Chroma returns cosine distance
+                score=round(min(1.0, similarity * (1.0 - weight) + lexical * weight), 4),
                 doc_version=str(meta.get("doc_version", "")),
                 superseded=bool(meta.get("superseded", False)),
             ))
+        ranked.sort(key=lambda p: p.score, reverse=True)
+        passages = ranked[:k]
         return passages
+
+    def _doc_versions(self, info: IndexInfo) -> tuple[str, ...]:
+        """Distinct doc_version labels in the served index, cached per index."""
+        if self._versions is not None and self._versions[0] == info.index_id:
+            return self._versions[1]
+        col = self.client.get_collection(info.collection)
+        found: set[str] = set()
+        for offset in range(0, info.count, 1000):
+            rows = col.get(limit=min(1000, info.count - offset), offset=offset,
+                           include=["metadatas"])
+            found.update(str(m["doc_version"]) for m in rows.get("metadatas") or []
+                         if m and m.get("doc_version") is not None)
+        self._versions = (str(info.index_id), tuple(sorted(found)))
+        return self._versions[1]
+
+    def _where(self, question: str, info: IndexInfo,
+               include_superseded: bool) -> dict[str, Any] | None:
+        """The metadata filter, applied inside the Chroma query. Naming a year asks for the
+        document of that year (current or superseded); otherwise superseded documents are
+        excluded unless the caller says the user asked about an older version. `{}` means the
+        question names a year that no indexed document has."""
+        years = set(_YEARS.findall(question))
+        if years:
+            matched = [v for v in self._doc_versions(info) if any(y in v for y in years)]
+            if not matched:
+                return {}
+            return {"doc_version": matched[0]} if len(matched) == 1 else {
+                "doc_version": {"$in": matched}}
+        return None if include_superseded else {"superseded": False}

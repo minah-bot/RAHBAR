@@ -22,6 +22,8 @@ data:
   CHUNK_SIZE: "400"
   CHUNK_OVERLAP: "50"
   TOP_K: "5"
+  # share of the retrieval score that comes from exact-term overlap (clause numbers, fees); 0 turns it off
+  LEXICAL_WEIGHT: "0.15"
   # best-passage cosine similarity below this means "the corpus does not cover it". Tuned on the golden set.
   RELEVANCE_FLOOR: "0.55"
   # cosine similarity needed for a cache hit. Tuned with eval/tune_cache.py.

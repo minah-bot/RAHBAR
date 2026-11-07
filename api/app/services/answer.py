@@ -12,12 +12,11 @@ import inspect
 import logging
 import time
 
-from pydantic import ValidationError
 
 from ..config import Settings
 from ..logjson import request_id_var
 from ..providers.embedding import EmbeddingError
-from ..providers.llm.base import LLMProvider, ProviderError
+from ..providers.llm.base import LLMProvider
 from ..retrieval.base import Retriever
 from ..retrieval.index import IndexNotReady
 from ..retrieval.version import wants_older_version
@@ -58,7 +57,7 @@ def generate_validated(
     for attempt in (1, 2):
         try:
             answer = provider.generate(question, passages)
-        except (ValidationError, ValueError, ProviderError) as exc:
+        except Exception as exc:   # any provider failure: retry once, then the safe fallback, never a 500
             metrics.VALIDATION_FAILURES.inc()
             log.warning("model output rejected", extra={"attempt": attempt, "error": repr(exc)[:300]})
             continue
@@ -66,6 +65,10 @@ def generate_validated(
         if dropped:
             metrics.CITATIONS_DROPPED.inc(dropped)
             log.warning("fabricated citations dropped", extra={"dropped": dropped})
+        if answer.answered_from_context and not answer.answer.strip():
+            metrics.VALIDATION_FAILURES.inc()   # an "answer" with no text is a failed generation
+            log.warning("answer was empty", extra={"attempt": attempt})
+            continue
         if answer.answered_from_context and not answer.citations:
             metrics.VALIDATION_FAILURES.inc()   # a claim with no valid source is not an answer
             log.warning("answer had no valid citation", extra={"attempt": attempt})
@@ -105,7 +108,7 @@ def answer_question(
             if index_id and embedder is not None:
                 query_vec: list[float] = embedder.embed_query(question)
                 vector = query_vec
-                hit, similarity = cache.lookup(query_vec, index_id)
+                hit, similarity = cache.lookup(query_vec, index_id, question)
                 if hit is not None:
                     metrics.CACHE_LOOKUPS.labels(result="hit").inc()
                     log.info("answered", extra={"cached": True, "similarity": round(similarity, 4),
@@ -126,8 +129,9 @@ def answer_question(
     passages = _retrieve(retriever, question, settings.top_k, older)
     metrics.RETRIEVAL_SECONDS.observe(time.perf_counter() - started)
 
-    best = passages[0].score if passages else 0.0
-    if best < settings.relevance_floor:
+    # Only passages above the floor reach the model: weak neighbours are noise it could cite.
+    grounded = [p for p in passages if p.score >= settings.relevance_floor]
+    if not grounded:
         metrics.ABSTENTIONS.labels(reason="below_relevance_floor").inc()
         response = AskResponse(
             request_id=request_id_var.get(), answer=ABSTAIN_TEXT, citations=[],
@@ -137,7 +141,7 @@ def answer_question(
         return response
 
     started = time.perf_counter()
-    answer = generate_validated(question, passages, provider)
+    answer = generate_validated(question, grounded, provider)
     metrics.GENERATION_SECONDS.observe(time.perf_counter() - started)
 
     if answer is None:
@@ -158,7 +162,7 @@ def answer_question(
     response = _response(answer, passages, provider)
     if use_cache and cache is not None and index_id and vector is not None:
         try:
-            cache.store(vector, index_id, response)   # only validated, grounded answers get here
+            cache.store(vector, index_id, response, question)   # only validated, grounded answers get here
         except Exception as exc:
             log.warning("cache store failed", extra={"error": repr(exc)[:200]})
     _log(settings, retriever, provider, passages, response, None)

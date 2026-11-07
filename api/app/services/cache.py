@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
 import uuid
 from typing import Any
 
@@ -21,6 +22,9 @@ log = logging.getLogger("rahbar.cache")
 
 PREFIX = "rahbar:cache:"
 MAX_ENTRIES = 2000   # a linear scan stays cheap; ADR 0002 says when to move to a vector index
+
+
+_YEARS = re.compile(r"\b(?:19|20)\d{2}\b")
 
 
 def cosine(a: list[float], b: list[float]) -> float:
@@ -57,8 +61,11 @@ class SemanticCache:
                                                                "index_id": index_id})
         return removed
 
-    def lookup(self, vector: list[float], index_id: str) -> tuple[AskResponse | None, float]:
-        """Return (cached response, similarity) for the best entry at or above the threshold."""
+    def lookup(self, vector: list[float], index_id: str,
+               question: str = "") -> tuple[AskResponse | None, float]:
+        """Return (cached response, similarity) for the best entry at or above the threshold.
+        A semantic match never crosses an explicit year: "2023 rules" must not reuse the answer
+        cached for "2026 rules", however close the embeddings are."""
         self.invalidate_other_indexes(index_id)
         keys = list(self.redis.scan_iter(match=f"{PREFIX}{index_id}:*", count=500))
         if not keys:
@@ -68,6 +75,8 @@ class SemanticCache:
             if raw is None:
                 continue
             entry = json.loads(raw)
+            if set(_YEARS.findall(question)) != set(_YEARS.findall(entry.get("q", ""))):
+                continue
             sim = cosine(vector, entry["vec"])
             if best is None or sim > best[0]:
                 best = (sim, entry)
@@ -76,12 +85,13 @@ class SemanticCache:
         # request_id and cached are per-request, not stored: the caller overwrites both.
         return AskResponse(request_id="-", **best[1]["resp"]), best[0]
 
-    def store(self, vector: list[float], index_id: str, response: AskResponse) -> bool:
+    def store(self, vector: list[float], index_id: str, response: AskResponse,
+              question: str = "") -> bool:
         """Callers decide whether an answer is safe to cache (see answer.py); this just writes."""
         count = sum(1 for _ in self.redis.scan_iter(match=f"{PREFIX}{index_id}:*", count=500))
         if count >= MAX_ENTRIES:
             return False
-        payload = json.dumps({"vec": vector, "resp": response.model_dump(
+        payload = json.dumps({"q": question, "vec": vector, "resp": response.model_dump(
             exclude={"request_id", "cached"})})
         self.redis.set(f"{PREFIX}{index_id}:{uuid.uuid4().hex}", payload, ex=self.ttl)
         metrics.CACHE_LOOKUPS.labels(result="stored").inc()

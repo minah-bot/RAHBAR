@@ -9,6 +9,7 @@ cut mid-row. Overlap is carried between neighbouring chunks of the same section.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 
@@ -96,6 +97,16 @@ def _split_long(unit: _Unit, size: int) -> list[_Unit]:
     return out
 
 
+def _chunk_id(doc: Document, seq: int, page: int, section: str, text: str) -> str:
+    """`<document>-<NNNN>-<hash>`. The hash covers the document's identity, version and the chunk's
+    page, section and text, so an unchanged chunk keeps its id across re-indexes (its vector can be
+    reused), a changed one gets a new id, and same-named files in different folders never collide."""
+    digest = hashlib.sha1(
+        f"{doc.identity or doc.source}\0{doc.doc_version}\0{doc.superseded}\0{page}\0"
+        f"{section}\0{text}".encode()).hexdigest()[:8]
+    return f"{_slug(doc.source.rsplit('.', 1)[0])}-{seq:04d}-{digest}"
+
+
 def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:60]
 
@@ -107,7 +118,6 @@ def chunk(doc: Document, size: int, overlap: int) -> list[Chunk]:
     if overlap >= size:
         raise ValueError("overlap must be smaller than size")
     chunks: list[Chunk] = []
-    slug = _slug(doc.source.rsplit(".", 1)[0])
     for heading, units in _split_sections(doc):
         flat: list[_Unit] = []
         for u in units:
@@ -121,7 +131,8 @@ def chunk(doc: Document, size: int, overlap: int) -> list[Chunk]:
                 body = "\n\n".join(x.text for x in cur)
                 text = (tail + "\n\n" + body).strip() if tail else body
                 chunks.append(Chunk(
-                    id=f"{slug}-{len(chunks):04d}", text=text, source=doc.source,
+                    id=_chunk_id(doc, len(chunks), cur[0].page, heading, text),
+                    text=text, source=doc.source,
                     section=heading, page=cur[0].page, doc_version=doc.doc_version,
                     superseded=doc.superseded))
                 ws = body.split()
@@ -136,13 +147,13 @@ def chunk(doc: Document, size: int, overlap: int) -> list[Chunk]:
 def chunk_fixed(doc: Document, size: int) -> list[Chunk]:
     """The naive baseline: fixed windows of `size` tokens, no overlap, no sections. Used only
     to reproduce Stage B of docs/FAILURE-ANALYSIS.md (CHUNK_STRATEGY=fixed); never the default."""
-    slug = _slug(doc.source.rsplit(".", 1)[0])
     chunks: list[Chunk] = []
     for page in doc.pages:
         ws = page.text.split()
         for i in range(0, len(ws), size):
             chunks.append(Chunk(
-                id=f"{slug}-{len(chunks):04d}", text=" ".join(ws[i:i + size]),
+                id=_chunk_id(doc, len(chunks), page.page, "", " ".join(ws[i:i + size])),
+                text=" ".join(ws[i:i + size]),
                 source=doc.source, section="", page=page.page, doc_version=doc.doc_version,
                 superseded=doc.superseded))
     return chunks

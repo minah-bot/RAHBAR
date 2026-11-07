@@ -50,6 +50,7 @@ class Settings:
     cache_ttl_seconds: int = 604800  # CACHE_TTL_SECONDS: entries also expire after a week
     redis_host: str = "redis"        # REDIS_HOST
     redis_port: int = 6379           # REDIS_PORT
+    lexical_weight: float = 0.15     # LEXICAL_WEIGHT: share of the score from exact-term overlap
     llm_timeout: float = 90.0        # LLM_TIMEOUT: seconds; a hung model must not hold a worker
     index_ttl_seconds: float = 5.0   # how long the API trusts what it read about the index
 
@@ -79,6 +80,7 @@ def get_settings() -> Settings:
         cache_ttl_seconds=_int("CACHE_TTL_SECONDS", 604800),
         redis_host=os.environ.get("REDIS_HOST", "redis"),
         redis_port=_int("REDIS_PORT", 6379),
+        lexical_weight=_float("LEXICAL_WEIGHT", 0.15),
         llm_timeout=_float("LLM_TIMEOUT", 90.0),
         index_ttl_seconds=_float("INDEX_TTL_SECONDS", 5.0),
     )

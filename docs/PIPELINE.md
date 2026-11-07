@@ -48,6 +48,16 @@ its own `EMBED_MODEL` in `/readyz` and again on every query (`api/app/retrieval/
 `retrieval/chroma.py:check_ready`); on a mismatch it answers 503 with `failed: embedding-pin`, stays at 0/1 READY, and
 logs `embedding pin violated` with both model names. It also compares the question vector's dimension with the index's.
 
+## Retrieval
+`api/app/retrieval/chroma.py`. The question is embedded with the pinned model and the active collection is queried for
+`3 x TOP_K` candidates, then re-ranked by `score = (1 - w) x cosine similarity + w x exact-term overlap`, where `w` is
+`LEXICAL_WEIGHT` (0.15; 0 turns the blend off). Exact identifiers ("clause 5.4", "PKR 3,000") blur in embeddings, so a
+verbatim hit is worth a little extra. **Versions:** the filter runs inside the Chroma query. A question that names a year
+selects the document whose `doc_version` contains it (several years, several versions); a year with no matching document
+returns nothing and the answer abstains; otherwise only `superseded: false` documents are searched, unless the question asks
+for "the old/previous rules" (`retrieval/version.py`). **Floor:** only passages at or above `RELEVANCE_FLOOR` are given to the
+model; the response still lists every retrieved passage with its score, which is what you need to choose the floor.
+
 ## Semantic cache
 ADR 0003. Threshold chosen with `eval/tune_cache.py` (paraphrase pairs that should hit, near-miss pairs that must not).
 

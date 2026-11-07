@@ -17,8 +17,8 @@ then **paragraph / numbered clause**, then **sentence**, then words as a last re
 up to `CHUNK_SIZE` tokens and neighbours inside a section share `CHUNK_OVERLAP` tokens. A table is kept
 whole when it fits; otherwise it is split by rows and the header row is repeated in every piece, so a
 row is never cut and a fragment is never a column of unlabelled numbers. Every chunk carries `source`,
-`section`, `page`, `doc_version` and `superseded`. Ids are `<document>-<NNNN>`, stable for the same
-document and position, so a re-index of unchanged files produces the same ids.
+`section`, `page`, `doc_version` and `superseded`. Ids are `<document>-<NNNN>-<hash>`, stable for the same
+document, position and content, so a re-index of unchanged files produces the same ids and an unchanged chunk keeps its vector (see ADR 0001). Two files with the same name in different folders get different ids (the hash covers the document's corpus-relative identity). Pages that are not content, such as a table of contents, are left out by data and not by code: `exclude_pages: [1, 2, 3]` on a document in `corpus/sources.yaml`, which `fetch.py` copies into `_index.json`.
 The size and overlap are measured, not guessed: `eval/chunk_sweep.py` compares at least three
 configurations on the golden set (table in PIPELINE.md).
 

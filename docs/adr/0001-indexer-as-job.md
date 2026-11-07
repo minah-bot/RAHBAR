@@ -31,6 +31,8 @@ older ones are deleted. The same swap changes the semantic cache's index id, whi
 cached answers (ADR 0003). One command re-indexes with no redeploy and no downtime:
 `kubectl create job --from=cronjob/reindex manual-1 -n rahbar`.
 
+**Strictness (adopted from Minah's review of the first version):** the Job validates `_index.json` (every entry, no path outside the corpus), processes every document and collects failures, and builds *nothing* if any document failed, so the API can never serve a partial corpus; it rejects duplicate or conflicting chunk ids, and a manifest row listed twice collapses to one set of chunks. Vectors of unchanged chunks are reused from the served index when it was built with the same embedding model (ids cover content, ADR 0002), so a weekly re-index only embeds what changed.
+
 The Job's first init container waits for Chroma and for documents to appear on the corpus PVC, so
 `kubectl apply -k` followed by `make corpus-load` works in either order.
 

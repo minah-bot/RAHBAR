@@ -18,7 +18,10 @@ done
 
 export CHROMA_HOST=localhost CHROMA_PORT=8765 OLLAMA_URL=http://localhost:11500
 export EMBED_MODEL=hash-256 CORPUS_DIR="$ROOT/eval/fixtures" CHUNK_SIZE=120 CHUNK_OVERLAP=20
-echo "== indexer"; (cd "$ROOT/indexer" && "$BIN/python" -m pipeline.run | tail -3)
+echo "== indexer (first run)"; (cd "$ROOT/indexer" && "$BIN/python" -m pipeline.run | tail -3)
+sleep 1   # collection names carry a one-second timestamp
+echo "== indexer (second run: unchanged chunks reuse their vectors)"
+(cd "$ROOT/indexer" && "$BIN/python" -m pipeline.run | grep -E "embedding chunks|index stored")
 
 export RETRIEVER=chroma LLM_PROVIDER=ollama-host RELEVANCE_FLOOR=0.15 TOP_K=5 TEMPERATURE=0.1
 export LLM_MODEL=fake CACHE_ENABLED=false

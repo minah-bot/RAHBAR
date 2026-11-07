@@ -35,6 +35,7 @@ jobs:
       # Stub retriever and stub provider: no network, no model, no cluster.
       - run: cd api && pytest -q --cov=app --cov-report=term-missing --cov-fail-under=60
       - run: cd indexer && pytest -q --cov=pipeline --cov-report=term
+      - run: pip install pyyaml==6.0.2 && cd eval && python -m pytest -q test_run_eval.py
 
   manifests:
     runs-on: ubuntu-latest

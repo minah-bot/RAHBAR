@@ -13,8 +13,13 @@ from pathlib import Path
 
 from .models import Document, Page
 
-MIN_TEXT_CHARS = 25     # a page with fewer characters than this has no usable text layer
+MIN_TEXT_CHARS = 150    # fewer characters than this: no usable text layer (covers sparse cover pages)
 OCR_DPI = 200
+
+
+def _needs_ocr(text: str) -> bool:
+    """OCR pages with no text layer, or one too small to be real content."""
+    return len(text.strip()) < MIN_TEXT_CHARS
 
 
 def extract(path: str, doc_version: str, superseded: bool) -> Document:
@@ -93,7 +98,7 @@ def _pdf_pages(path: Path) -> list[Page]:
             text = _page_text_and_tables(page)
             ocr = False
             # OCR_ENABLED=false exists only to reproduce Stage A of docs/FAILURE-ANALYSIS.md.
-            if len(text) < MIN_TEXT_CHARS and os.environ.get("OCR_ENABLED", "true") != "false":
+            if _needs_ocr(text) and os.environ.get("OCR_ENABLED", "true") != "false":
                 text, ocr = _ocr_page(path, i), True
             pages.append(Page(source=path.name, page=i, text=text, ocr=ocr))
     return pages
