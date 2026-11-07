@@ -84,7 +84,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with: {name: "image-${{ matrix.image }}"}
       - run: docker load -i ${{ matrix.image }}.tar
-      - uses: aquasecurity/trivy-action@0.28.0
+      - uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2   # v0.28.0
         with:
           image-ref: rahbar-${{ matrix.image }}:ci
           severity: HIGH,CRITICAL
@@ -130,7 +130,11 @@ jobs:
       - name: diagnostics on failure
         if: failure()
         run: |
-          kubectl get all,networkpolicy -n rahbar || true
-          kubectl describe pods -n rahbar | tail -120 || true
-          kubectl logs job/indexer -n rahbar --all-containers --tail=80 || true
-          kubectl logs deploy/api -n rahbar --tail=80 || true
+          kubectl get pods,svc,pvc,networkpolicy -n rahbar -o wide || true
+          echo "=== events"; kubectl get events -n rahbar --sort-by=.lastTimestamp | tail -40 || true
+          echo "=== chroma-0"; kubectl describe pod chroma-0 -n rahbar | tail -60 || true
+          echo "=== chroma-0 logs"; kubectl logs chroma-0 -n rahbar --tail=60 || true
+          echo "=== chroma-0 previous logs"; kubectl logs chroma-0 -n rahbar --previous --tail=60 || true
+          echo "=== indexer"; kubectl logs job/indexer -n rahbar --all-containers --tail=60 || true
+          echo "=== api"; kubectl describe pod -l app=api -n rahbar | tail -60 || true
+          kubectl logs deploy/api -n rahbar --tail=60 || true
