@@ -8,6 +8,10 @@ COPY index.html .
 RUN echo "$GIT_SHA" > version.txt
 
 FROM nginxinc/nginx-unprivileged:1.27-alpine
+# The tag's Alpine packages lag behind security fixes (openssl, curl, expat, zlib...). Upgrade them at build
+# time as root, then return to the unprivileged user: the running container never has root.
+USER root
+RUN apk upgrade --no-cache
 COPY nginx.conf /etc/nginx/nginx.conf
 COPY --from=stage /site /usr/share/nginx/html
 USER 101

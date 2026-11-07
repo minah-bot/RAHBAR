@@ -8,6 +8,9 @@ RUN /opt/venv/bin/pip install -r requirements.txt
 
 # --- runtime stage: no compiler, no pip cache, non-root, read-only-friendly --------------
 FROM python:3.12-slim
+# Pick up Debian security fixes published after the base image was built (Trivy gates the build on
+# fixable HIGH/CRITICAL findings, e.g. zlib1g). Only the runtime stage matters: the build stage is discarded.
+RUN apt-get update && apt-get -y --no-install-recommends upgrade && rm -rf /var/lib/apt/lists/*
 # PYTHONDONTWRITEBYTECODE: the root filesystem is read-only in the cluster (section 4.7).
 ENV PATH=/opt/venv/bin:$PATH PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 HOME=/tmp
 RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin rahbar

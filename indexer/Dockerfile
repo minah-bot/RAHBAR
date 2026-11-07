@@ -8,7 +8,9 @@ RUN /opt/venv/bin/pip install -r requirements.txt
 FROM python:3.12-slim
 ENV PATH=/opt/venv/bin:$PATH PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 HOME=/tmp TMPDIR=/tmp
 # OCR needs the tesseract binary and poppler (pdf2image). Nothing else is installed.
+# 'upgrade' first so Debian security fixes newer than the base image (e.g. zlib1g) are applied.
 RUN apt-get update \
+ && apt-get -y --no-install-recommends upgrade \
  && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng poppler-utils \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin rahbar
