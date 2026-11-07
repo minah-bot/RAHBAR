@@ -21,6 +21,7 @@ LATENCY = Histogram(
 CACHE_HITS = Counter("rahbar_cache_hits_total", "Semantic cache hits")
 ABSTENTIONS = Counter("rahbar_abstentions_total", "Unsupported questions declined")
 GENERATION_FAILURES = Counter("rahbar_generation_fallbacks_total", "Safe generation fallbacks")
+RETRIEVAL_FAILURES = Counter("rahbar_retrieval_failures_total", "Retrieval failures")
 
 
 @router.get("/metrics")

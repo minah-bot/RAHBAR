@@ -8,32 +8,83 @@ import re
 from .models import Chunk, Document
 
 
+EXCLUDED_PAGES = {1, 2, 3, 4, 5, 26}
+EXCLUDED_SOURCES = {
+    "undergraduate-academic-rules-and-regulations-august-2023.pdf",
+    "rahbar-rules-ocr.pdf",
+}
+
+
+def _is_heading_line(line: str) -> bool:
+    """Recognize standalone section headings, not numbered policy clauses."""
+    line = line.strip()
+    if not line or len(line) > 100 or len(line.split()) > 12:
+        return False
+
+    # Markdown headings.
+    if re.match(r"^#{1,6}\s+", line):
+        return True
+
+    # Numbered section headings, e.g. "1. Introduction".
+    # Decimal clauses such as "1.21 Students..." are deliberately excluded.
+    if re.match(r"^\d{1,2}\.\s+[A-Za-z]", line):
+        return True
+
+    if re.match(r"^\d+\.\d+", line):
+        return False
+
+    # Standalone all-uppercase headings.
+    letters = [char for char in line if char.isalpha()]
+    if letters and all(char.isupper() for char in letters):
+        return True
+
+    # Short title-case headings, e.g. "Attendance Requirements".
+    words = re.findall(r"[A-Za-z][A-Za-z'-]*", line)
+    if not words or len(words) > 7 or line[-1] in ".!?;:":
+        return False
+
+    small_words = {"and", "or", "of", "the", "for", "in", "to", "a", "on"}
+    title_case = all(
+        word[0].isupper() or word.lower() in small_words
+        for word in words
+    )
+    return title_case
+
+
 def chunk(doc: Document, size: int, overlap: int) -> list[Chunk]:
-    """Split on sections, paragraphs, and sentence boundaries, keeping each chunk under
-    `size` whitespace-delimited words, with `overlap` words shared between neighbours. Every chunk keeps
-    the section heading it sits under, its page, doc_version and superseded."""
+    """Split pages into overlapping chunks while retaining section metadata."""
     if size < 1 or overlap < 0 or overlap >= size:
         raise ValueError("size must be positive and overlap must be in [0, size)")
+
     result: list[Chunk] = []
-    # Word tokens make configuration portable without a model tokenizer.
+    step = size - overlap
+
     for page in doc.pages:
-        section = ""
-        paragraphs: list[tuple[str, str]] = []
-        for block in re.split(r"\n\s*\n", page.text):
-            block = block.strip()
-            if not block:
-                continue
-            heading = re.match(r"^(#{1,6}\s+.+|(?:\d+(?:\.\d+)*[.)]?\s+).{2,100})$", block)
-            if heading and len(block.split()) <= 18:
-                section = re.sub(r"^#+\s*", "", block).strip()
-            else:
-                paragraphs.append((section or "General", block))
-        for section, paragraph in paragraphs:
-            step = size - overlap
-            sentences = [part.split() for part in
-                         re.split(r"(?<=[.!?])\s+|\n+", paragraph) if part.split()]
+        source_name = doc.source.replace("\\", "/").split("/")[-1].lower()
+        if source_name in EXCLUDED_SOURCES and page.page in EXCLUDED_PAGES:
+            continue
+
+        section = "General"
+        body_lines: list[str] = []
+
+        def flush_body() -> None:
+            if not body_lines:
+                return
+
+            body = " ".join(line.strip() for line in body_lines if line.strip())
+            body_lines.clear()
+            if not body:
+                return
+
+            sentences = [
+                part.split()
+                for part in re.split(r"(?<=[.!?])\s+", body)
+                if part.split()
+            ]
+
             parts: list[list[str]] = []
             current: list[str] = []
+
             for sentence in sentences:
                 if len(sentence) > size:
                     if current:
@@ -41,22 +92,48 @@ def chunk(doc: Document, size: int, overlap: int) -> list[Chunk]:
                         current = []
                     for start in range(0, len(sentence), step):
                         parts.append(sentence[start:start + size])
-                    continue
-                if current and len(current) + len(sentence) > size:
+                elif current and len(current) + len(sentence) > size:
                     parts.append(current)
                     tail = current[-overlap:] if overlap else []
-                    current = tail + sentence if len(tail) + len(sentence) <= size else sentence.copy()
+                    current = tail + sentence
                 else:
                     current.extend(sentence)
+
             if current:
                 parts.append(current)
+
             offset = 0
             for part in parts:
                 text = " ".join(part)
                 digest = hashlib.sha1(
-                    f"{doc.source}:{page.page}:{section}:{offset}:{text}".encode()
+                    f"{doc.identity or doc.source}:{doc.doc_version}:{doc.superseded}:"
+                    f"{page.page}:{section}:{offset}:{text}".encode()
                 ).hexdigest()[:16]
-                result.append(Chunk(digest, text, doc.source, section, page.page,
-                                    doc.doc_version, doc.superseded))
+
+                result.append(
+                    Chunk(
+                        digest,
+                        text,
+                        doc.source,
+                        section,
+                        page.page,
+                        doc.doc_version,
+                        doc.superseded,
+                    )
+                )
                 offset += max(1, len(part) - overlap)
+
+        for line in page.text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+
+            if _is_heading_line(line):
+                flush_body()
+                section = re.sub(r"^#{1,6}\s*", "", line).strip()
+            else:
+                body_lines.append(line)
+
+        flush_body()
+
     return result

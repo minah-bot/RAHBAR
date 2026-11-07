@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from typing import cast
 
 from ..config import Settings
@@ -23,11 +24,19 @@ class SemanticCache:
         self.settings = settings
         self.retriever = retriever
         self.provider = provider
-        collection = getattr(retriever, "collection", None)
-        metadata = getattr(collection, "metadata", None) or {}
-        fingerprint = metadata.get("index_fingerprint", "unversioned")
-        self.prefix = (f"rahbar:cache:{settings.collection}:{settings.embed_model}:"
-                       f"{fingerprint}:{provider}:")
+        if not settings.redis_url or not hasattr(retriever, "embed"):
+            self.prefix = ""
+            return
+        try:
+            collection = getattr(retriever, "collection", None)
+            metadata = getattr(collection, "metadata", None) or {}
+            fingerprint = metadata.get("index_fingerprint", "unversioned")
+            self.prefix = (f"rahbar:cache:{settings.collection}:{settings.embed_model}:"
+                           f"{fingerprint}:{provider}:")
+        except Exception:
+            # Cache metadata is optional; a store outage must not prevent retrieval from
+            # returning its own safe error response, or permit a stale unversioned hit.
+            self.prefix = ""
 
     def _client(self):
         if not self.settings.redis_url:
@@ -38,6 +47,8 @@ class SemanticCache:
                                    socket_connect_timeout=0.2, socket_timeout=0.2)
 
     def lookup(self, question: str) -> AskResponse | None:
+        if not self.prefix:
+            return None
         client = self._client()
         embed = getattr(self.retriever, "embed", None)
         if client is None or embed is None:
@@ -54,6 +65,15 @@ class SemanticCache:
                     if not raw:
                         continue
                     item = json.loads(raw)
+                    saved_question = item.get("question")
+                    # A semantic match must not cross explicit policy years. Older
+                    # cache entries without their source question are not reusable.
+                    if not isinstance(saved_question, str):
+                        continue
+                    query_years = set(re.findall(r"\b(?:19|20)\d{2}\b", question))
+                    saved_years = set(re.findall(r"\b(?:19|20)\d{2}\b", saved_question))
+                    if query_years != saved_years:
+                        continue
                     score = _cosine(vector, item["vector"])
                     if best is None or score > best[0]:
                         best = score, raw
@@ -66,6 +86,8 @@ class SemanticCache:
         return None
 
     def save(self, question: str, response: AskResponse) -> None:
+        if not self.prefix:
+            return
         client = self._client()
         embed = getattr(self.retriever, "embed", None)
         if client is None or embed is None or never_cache(response):
@@ -73,7 +95,7 @@ class SemanticCache:
         try:
             vector = embed(question)
             key = self.prefix + hashlib.sha256(question.casefold().strip().encode()).hexdigest()
-            client.setex(key, 3600, json.dumps({"vector": vector,
+            client.setex(key, 3600, json.dumps({"question": question, "vector": vector,
                                                "response": response.model_dump()}))
         except Exception:
             return
@@ -91,8 +113,8 @@ def invalidate(settings: Settings, provider: str | None = None) -> int:
     import redis
 
     prefix = f"rahbar:cache:{settings.collection}:{settings.embed_model}:"
-    if provider:
-        prefix += f"{provider}:"
     client = redis.Redis.from_url(settings.redis_url, decode_responses=True)
     keys = list(client.scan_iter(match=prefix + "*", count=500))
+    if provider:
+        keys = [key for key in keys if f":{provider}:" in key[len(prefix):]]
     return cast(int, client.delete(*keys)) if keys else 0

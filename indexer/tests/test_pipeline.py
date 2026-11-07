@@ -38,3 +38,17 @@ def test_chunking_rejects_invalid_overlap():
     except ValueError:
         return
     raise AssertionError("invalid overlap should fail")
+
+
+def test_sparse_pdf_text_requires_ocr():
+    from pipeline.extract import _needs_ocr
+
+    assert _needs_ocr("")
+    assert _needs_ocr("A short page heading")
+    assert not _needs_ocr("Useful policy text. " * 20)
+
+
+def test_ocr_threshold_covers_sparse_cover_page():
+    from pipeline.extract import _needs_ocr
+
+    assert _needs_ocr("UNDERGRADUATE ACADEMIC RULES AND REGULATIONS 2023")

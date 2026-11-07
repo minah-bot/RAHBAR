@@ -1,8 +1,4 @@
-"""Turns a question into an AskResponse. This is where the query pipeline lives.
-
-The version below is the bare minimum that works with the stubs: retrieve,
-generate, return. Section 3.2 lists eight steps; this file does two of them.
-"""
+"""Turn a question into a validated, grounded AskResponse."""
 
 from __future__ import annotations
 
@@ -15,7 +11,12 @@ from ..providers.llm.base import LLMProvider
 from ..retrieval.base import Retriever
 from ..schemas import AskResponse, Citation, RetrievedRef
 from .cache import SemanticCache
-from ..routes.metrics import ABSTENTIONS, CACHE_HITS, GENERATION_FAILURES
+from ..routes.metrics import (
+    ABSTENTIONS,
+    CACHE_HITS,
+    GENERATION_FAILURES,
+    RETRIEVAL_FAILURES,
+)
 
 log = logging.getLogger("rahbar.answer")
 
@@ -28,8 +29,21 @@ def answer_question(
     if cached:
         CACHE_HITS.inc()
         return cached.model_copy(update={"request_id": request_id_var.get(), "cached": True})
-    passages = retriever.retrieve(question, k=settings.top_k)
-    passages = [p for p in passages if p.score >= settings.relevance_floor]
+    try:
+        passages = retriever.retrieve(question, k=settings.top_k)
+        passages = [p for p in passages if p.score >= settings.relevance_floor]
+    except Exception as exc:
+        RETRIEVAL_FAILURES.inc()
+        ABSTENTIONS.inc()
+        log.warning("retrieval failed; returning safe abstention", extra={
+            "error": type(exc).__name__, "detail": str(exc)[:300]
+        })
+        return AskResponse(
+            request_id=request_id_var.get(),
+            answer="I could not retrieve the documents needed to answer this question.",
+            citations=[], answered_from_context=False, confidence="low", retrieved=[],
+            provider=provider.name, cached=False,
+        )
     if not passages:
         answer = None
         answer_text = "I could not find enough relevant information in the available documents to answer this question."
@@ -43,15 +57,22 @@ def answer_question(
             try:
                 answer = provider.generate(question, passages)
                 valid = {(p.source, p.section, p.page) for p in passages}
+                if not answer.answer.strip():
+                    raise ValueError("provider returned an empty answer")
                 if any((c.source, c.section, c.page) not in valid for c in answer.citations):
                     raise ValueError("provider cited a source outside retrieved evidence")
                 if answer.answered_from_context and not answer.citations:
                     raise ValueError("context-supported answer must cite evidence")
+                if not answer.answered_from_context and answer.citations:
+                    raise ValueError("abstaining answer must not include citations")
                 break
-            except Exception:
+            except Exception as exc:
                 answer = None
-                if retry == 0:
-                    log.warning("generation validation failed; retrying")
+                log.warning("generation validation failed", extra={
+                    "attempt": retry + 1,
+                    "error": type(exc).__name__,
+                    "status_code": getattr(getattr(exc, "response", None), "status_code", None),
+                })
         if answer is None:
             GENERATION_FAILURES.inc()
             answer_text = "I could not produce a validated answer from the retrieved documents."

@@ -32,6 +32,12 @@ def readyz(request: Request, response: Response) -> dict[str, object]:
                 failures.append("embedding model does not match index")
             else:
                 checks["embedding_model"] = "matched"
+            dimension = metadata.get("dimension")
+            if not isinstance(dimension, int) or dimension <= 0:
+                checks["embedding_dimension"] = {"indexed": dimension, "valid": False}
+                failures.append("embedding dimension metadata is missing or invalid")
+            else:
+                checks["embedding_dimension"] = {"indexed": dimension, "valid": True}
         except Exception as exc:
             checks["chroma"] = {"reachable": False, "error": str(exc)}
             failures.append("chroma unavailable")
@@ -45,8 +51,9 @@ def readyz(request: Request, response: Response) -> dict[str, object]:
                                  socket_timeout=0.5).ping()
             checks["redis"] = "reachable"
         except Exception as exc:
-            checks["redis"] = {"reachable": False, "error": str(exc)}
-            failures.append("redis unavailable")
+            # Redis only accelerates repeated questions. Cache operations fail open,
+            # so an outage must not remove an otherwise healthy API from service.
+            checks["redis"] = {"reachable": False, "optional": True, "error": str(exc)}
     else:
         checks["redis"] = "disabled"
     if failures:

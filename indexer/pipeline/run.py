@@ -49,8 +49,24 @@ def discover(corpus_dir: str) -> list[tuple[Path, str, bool]]:
     index = root / "_index.json"
     if index.exists():
         entries = json.loads(index.read_text(encoding="utf-8"))
-        return [(root / e["file"], str(e.get("doc_version", "unknown")),
-                 bool(e.get("superseded", False))) for e in entries]
+        if not isinstance(entries, list):
+            raise ValueError(f"{index} must contain a JSON list of document entries")
+        found: list[tuple[Path, str, bool]] = []
+        root_resolved = root.resolve()
+        for number, entry in enumerate(entries, 1):
+            if not isinstance(entry, dict) or not isinstance(entry.get("file"), str):
+                raise ValueError(f"{index} entry {number} is missing a string 'file' field")
+            path = (root / entry["file"]).resolve()
+            if path != root_resolved and root_resolved not in path.parents:
+                raise ValueError(f"{index} entry {number} points outside the corpus directory")
+            if path.suffix.lower() not in {".pdf", ".md", ".html", ".txt"}:
+                raise ValueError(f"{index} entry {number} has unsupported file type: {path.name}")
+            version = str(entry.get("doc_version", "unknown"))
+            superseded_value = entry.get("superseded", False)
+            superseded = (superseded_value if isinstance(superseded_value, bool)
+                          else str(superseded_value).lower() == "true")
+            found.append((path, version, superseded))
+        return found
     found = []
     for path in sorted(root.glob("*")):
         if path.suffix.lower() not in {".pdf", ".md", ".html", ".txt"}:
@@ -68,19 +84,73 @@ def run_pipeline(settings: IndexerSettings) -> int:
     from .clean import clean
     from .embed import embed
     from .extract import extract
-    from .store import store
+    from .store import reuse_embeddings, store
 
     documents = discover(settings.corpus_dir)
     if not documents:
         raise SystemExit(f"no documents found in {settings.corpus_dir}")
     all_chunks: list[Chunk] = []
-    for path, doc_version, superseded in documents:
-        doc = clean(extract(str(path), doc_version, superseded))
-        pieces = chunk(doc, settings.chunk_size, settings.chunk_overlap)
-        log("chunked", source=path.name, chunks=len(pieces))
-        all_chunks.extend(pieces)
-    vectors = embed([c.text for c in all_chunks], settings)
-    return store(all_chunks, vectors, settings)
+    failures: list[str] = []
+    corpus_root = Path(settings.corpus_dir).resolve()
+    log("documents discovered", documents=len(documents), corpus=settings.corpus_dir)
+    for number, (path, doc_version, superseded) in enumerate(documents, 1):
+        started = time.perf_counter()
+        stage = "extract"
+        try:
+            doc = extract(str(path), doc_version, superseded)
+            doc.identity = (
+                f"{path.resolve().relative_to(corpus_root).as_posix()}\0"
+                f"{doc_version}\0{superseded}"
+            )
+            stage = "clean"
+            doc = clean(doc)
+            page_count = len(doc.pages)
+            ocr_pages = sum(page.ocr for page in doc.pages)
+            stage = "chunk"
+            pieces = chunk(doc, settings.chunk_size, settings.chunk_overlap)
+            if not pieces:
+                raise ValueError("document produced no chunks")
+            all_chunks.extend(pieces)
+            log("document indexed for staging", source=path.name, document=number,
+                documents=len(documents), pages=page_count, ocr_pages=ocr_pages,
+                chunks=len(pieces), seconds=round(time.perf_counter() - started, 2))
+        except Exception as exc:
+            failures.append(f"{path.name}: {type(exc).__name__}: {exc}")
+            log("document failed", source=path.name, document=number,
+                documents=len(documents), stage=stage, error_type=type(exc).__name__,
+                error=str(exc), seconds=round(time.perf_counter() - started, 2))
+
+    if failures:
+        raise RuntimeError(
+            f"index build aborted; {len(failures)} of {len(documents)} document(s) failed: "
+            + "; ".join(failures)
+        )
+    if not all_chunks:
+        raise RuntimeError("index build aborted; no chunks were produced")
+
+    unique_chunks: dict[str, Chunk] = {}
+    for item in all_chunks:
+        previous = unique_chunks.get(item.id)
+        if previous is not None and previous != item:
+            raise RuntimeError(f"conflicting chunks share id {item.id!r}")
+        unique_chunks[item.id] = item
+    all_chunks = list(unique_chunks.values())
+
+    started = time.perf_counter()
+    reused = reuse_embeddings(all_chunks, settings)
+    missing = [item for item in all_chunks if item.id not in reused]
+    log("embedding chunks", chunks=len(all_chunks), reused=len(reused),
+        to_embed=len(missing), model=settings.embed_model)
+    new_vectors = embed([item.text for item in missing], settings)
+    vectors_by_id = dict(reused)
+    vectors_by_id.update({item.id: vector for item, vector in zip(missing, new_vectors)})
+    vectors = [vectors_by_id[item.id] for item in all_chunks]
+    log("embeddings ready", reused=len(reused), embedded=len(missing),
+        seconds=round(time.perf_counter() - started, 2))
+    started = time.perf_counter()
+    count = store(all_chunks, vectors, settings)
+    log("index stored", chunks=count, seconds=round(time.perf_counter() - started, 2))
+    return count
 
 
 def main() -> int:
@@ -103,6 +173,9 @@ def main() -> int:
     except NotImplementedError as exc:
         log("indexer stage not implemented yet", error=str(exc))
         return 2
+    except Exception as exc:
+        log("indexer failed", error_type=type(exc).__name__, error=str(exc))
+        return 1
     log("indexer finished", chunks=count, seconds=round(time.perf_counter() - started, 1))
     return 0
 
