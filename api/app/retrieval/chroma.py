@@ -1,124 +1,179 @@
-"""The real retriever. Yours to build (sections 3.2 and 4.4).
-
-Connection details are already here; the query is not.
-"""
+"""The real retriever (sections 3.2 and 4.4). Reads the index; never writes it."""
 
 from __future__ import annotations
 
-import httpx
+import logging
 import re
+import threading
+import time
 from typing import Any
 
 from ..config import Settings
+from ..providers.embedding import EmbeddingError, OllamaEmbedder
 from ..schemas import Passage
+from .index import POINTER_SUFFIX, IndexInfo, IndexNotReady, pin_conflicts
+
+log = logging.getLogger("rahbar.retrieval")
+
+_WORDS = re.compile(r"\w+(?:[.-]\w+)*")
+_YEARS = re.compile(r"\b(?:19|20)\d{2}\b")
 
 
 class ChromaRetriever:
     name = "chroma"
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, embedder: OllamaEmbedder | None = None) -> None:
         import chromadb  # the thin client, from chromadb-client in requirements.txt
         from chromadb.config import Settings as ChromaSettings
 
         self.settings = settings
+        self.embedder = embedder or OllamaEmbedder(settings)
         self.client = chromadb.HttpClient(host=settings.chroma_host, port=settings.chroma_port,
                                           settings=ChromaSettings(anonymized_telemetry=False))
-        self._collection = None
-        self._versions: tuple[str, ...] | None = None
+        self._versions: tuple[str, tuple[str, ...]] | None = None   # (index_id, doc_versions)
+        self._info: IndexInfo | None = None
+        self._info_at = 0.0
+        self._lock = threading.Lock()
 
-    @property
-    def collection(self):
-        # Refresh the handle so a long-lived API process notices a collection rebuilt
-        # by the separate indexer Job, without needing an API restart.
-        if self._collection is None or hasattr(self, "client"):
-            previous = self._collection
-            current = self.client.get_collection(self.settings.collection)
-            if previous is not None and getattr(previous, "id", None) != getattr(current, "id", None):
-                self._versions = None
-            self._collection = current
-        return self._collection
-
-    def embed(self, text: str) -> list[float]:
-        response = httpx.post(f"{self.settings.ollama_url.rstrip('/')}/api/embed",
-                              json={"model": self.settings.embed_model, "input": text}, timeout=120)
-        response.raise_for_status()
-        return [float(value) for value in response.json()["embeddings"][0]]
-
-    def retrieve(self, question: str, k: int) -> list[Passage]:
-        if k <= 0:
-            return []
-        query_vector = self.embed(question)
-        collection = self.collection
-        indexed_dimension = (collection.metadata or {}).get("dimension")
-        if indexed_dimension is not None and len(query_vector) != indexed_dimension:
-            raise ValueError(
-                f"query embedding dimension {len(query_vector)} does not match index "
-                f"dimension {indexed_dimension}"
+    # -- what is the index? -------------------------------------------------------
+    def _resolve(self) -> IndexInfo:
+        base = self.settings.collection
+        try:
+            name = base
+            try:
+                pointer = self.client.get_collection(base + POINTER_SUFFIX)
+                got = pointer.get(ids=["active"])
+                if got["documents"]:
+                    name = got["documents"][0]
+            except Exception:  # no pointer yet (dummy index): read the base collection
+                pass
+            col = self.client.get_collection(name)
+            meta = col.metadata or {}
+            dim = meta.get("dimension")
+            return IndexInfo(
+                collection=name,
+                count=col.count(),
+                embed_model=meta.get("embed_model"),
+                dimension=int(dim) if dim is not None else None,
+                index_id=str(meta["index_id"]) if "index_id" in meta else name,
             )
-        count = collection.count()
-        if not count:
-            return []
-        years = re.findall(r"\b(?:19|20)\d{2}\b", question)
-        requested_years = set(years)
-        filters: dict[str, object]
-        historical_query = bool(requested_years)
-        if historical_query:
-            versions = [version for version in self._document_versions(collection)
-                        if any(year in version for year in requested_years)]
-            if not versions:
-                return []
-            if len(versions) == 1:
-                filters = {"doc_version": versions[0]}
-            else:
-                filters = {"$or": [{"doc_version": version} for version in versions]}
-        else:
-            filters = {"superseded": False}
-        response = collection.query(
-            query_embeddings=[query_vector], n_results=min(max(k * 3, k), count),
-            where=filters, include=["documents", "metadatas", "distances"],
-        )
-        ids = response.get("ids", [[]])[0]
-        docs = response.get("documents", [[]])[0]
-        metas = response.get("metadatas", [[]])[0]
-        distances = response.get("distances", [[]])[0]
-        # Combine semantic rank with exact term overlap. Exact identifiers and numbers
-        # matter in university rules; normalize scores to the same [0, 1] range.
-        terms = {term for term in re.findall(r"[\w]+(?:[.-][\w]+)*", question.casefold())
-                 if len(term) > 1}
-        hits: list[tuple[float, Passage]] = []
-        for chunk_id, text, meta, distance in zip(ids, docs, metas, distances):
-            # An explicit year is an intentional request for that historical version.
-            # Otherwise the where clause excludes superseded policies.
-            if not text or not meta or (not historical_query and meta.get("superseded", False)):
-                continue
-            version = str(meta.get("doc_version", ""))
-            if requested_years and not any(year in version for year in requested_years):
-                continue
-            similarity = max(0.0, min(1.0, 1.0 - float(distance)))
-            body_terms = set(re.findall(r"[\w]+(?:[.-][\w]+)*", text.casefold()))
-            lexical = len(terms & body_terms) / max(1, len(terms))
-            score = min(1.0, similarity * 0.85 + lexical * 0.15)
-            hits.append((score, Passage(chunk_id=str(chunk_id), text=text,
-                source=str(meta.get("source", "unknown")), section=str(meta.get("section", "")),
-                page=int(meta["page"]) if meta.get("page") is not None else None, score=score)))
-        hits.sort(key=lambda item: item[0], reverse=True)
-        return [passage for score, passage in hits[:k]
-                if score >= self.settings.relevance_floor]
+        except IndexNotReady:
+            raise
+        except Exception as exc:
+            text = repr(exc)
+            if "does not exist" in text or "NotFound" in text or "not found" in text.lower():
+                raise IndexNotReady(
+                    "collection", f"collection {base!r} does not exist: has the indexer run?"
+                ) from exc
+            raise IndexNotReady("chroma", f"chroma unreachable: {text}") from exc
 
-    def _document_versions(self, collection: Any) -> tuple[str, ...]:
-        """Read distinct indexed version labels for exact Chroma metadata filters."""
-        cached = getattr(self, "_versions", None)
-        if cached is not None:
-            return cached
-        count = collection.count()
-        versions: set[str] = set()
-        page_size = 1000
-        for offset in range(0, count, page_size):
-            response = collection.get(
-                limit=min(page_size, count - offset), offset=offset, include=["metadatas"]
-            )
-            for metadata in response.get("metadatas") or []:
-                if metadata and metadata.get("doc_version") is not None:
-                    versions.add(str(metadata["doc_version"]))
-        self._versions = tuple(sorted(versions))
-        return self._versions
+    def index_info(self, force: bool = False) -> IndexInfo:
+        with self._lock:
+            fresh = time.monotonic() - self._info_at < self.settings.index_ttl_seconds
+            if self._info is not None and fresh and not force:
+                return self._info
+        info = self._resolve()
+        with self._lock:
+            self._info, self._info_at = info, time.monotonic()
+        return info
+
+    def index_id(self) -> str | None:
+        return self.index_info().index_id
+
+    def check_ready(self) -> dict[str, object]:
+        """Readiness: Chroma reachable, collection non-empty, embedding pin holds."""
+        info = self.index_info(force=True)
+        if info.count == 0:
+            raise IndexNotReady("collection", f"collection {info.collection!r} is empty")
+        problems = pin_conflicts(info, self.settings.embed_model)
+        if problems:
+            for problem in problems:
+                log.error("embedding pin violated", extra={
+                    "conflict": problem, "index_embed_model": info.embed_model,
+                    "api_embed_model": self.settings.embed_model, "collection": info.collection})
+            raise IndexNotReady("embedding-pin", "; ".join(problems))
+        return {"collection": info.collection, "chunks": info.count,
+                "embed_model": info.embed_model, "index_id": info.index_id}
+
+    # -- the query -----------------------------------------------------------------
+    def retrieve(
+        self, question: str, k: int, *, include_superseded: bool = False
+    ) -> list[Passage]:
+        info = self.index_info()
+        problems = pin_conflicts(info, self.settings.embed_model)
+        if problems:  # refuse to serve vectors from a different model, even between probes
+            raise IndexNotReady("embedding-pin", "; ".join(problems))
+        try:
+            vector = self.embedder.embed_query(question)
+        except EmbeddingError as exc:
+            raise IndexNotReady("embedder", str(exc)) from exc
+        problems = pin_conflicts(info, self.settings.embed_model, len(vector))
+        if problems:
+            raise IndexNotReady("embedding-pin", "; ".join(problems))
+
+        where = self._where(question, info, include_superseded)
+        if where == {}:                 # an explicit year with no document of that year
+            return []
+        try:
+            col = self.client.get_collection(info.collection)
+            query_embeddings: Any = [vector]
+            res = col.query(query_embeddings=query_embeddings,
+                            n_results=max(1, min(max(k * 3, k), info.count)), where=where,
+                            include=["documents", "metadatas", "distances"])
+        except Exception as exc:
+            raise IndexNotReady("chroma", f"chroma query failed: {exc!r}") from exc
+
+        # Exact identifiers and numbers ("5.4", "PKR 3,000") blur in embeddings, so blend the
+        # semantic score with the share of the question's terms found verbatim in the chunk.
+        weight = min(max(self.settings.lexical_weight, 0.0), 1.0)
+        terms = set(_WORDS.findall(question.casefold()))
+        ids = (res.get("ids") or [[]])[0]
+        docs = (res.get("documents") or [[]])[0]
+        metas = (res.get("metadatas") or [[]])[0]
+        dists = (res.get("distances") or [[]])[0]
+        ranked: list[Passage] = []
+        for chunk_id, text, meta, dist in zip(ids, docs, metas, dists, strict=False):
+            meta = meta or {}
+            similarity = max(0.0, min(1.0, 1.0 - float(dist)))      # Chroma returns cosine distance
+            lexical = len(terms & set(_WORDS.findall((text or "").casefold()))) / max(1, len(terms))
+            page = meta.get("page")
+            ranked.append(Passage(
+                chunk_id=chunk_id, text=text or "", source=str(meta.get("source", "")),
+                section=str(meta.get("section", "")),
+                page=int(page) if isinstance(page, int | float) else None,
+                score=round(min(1.0, similarity * (1.0 - weight) + lexical * weight), 4),
+                doc_version=str(meta.get("doc_version", "")),
+                superseded=bool(meta.get("superseded", False)),
+            ))
+        ranked.sort(key=lambda p: p.score, reverse=True)
+        passages = ranked[:k]
+        return passages
+
+    def _doc_versions(self, info: IndexInfo) -> tuple[str, ...]:
+        """Distinct doc_version labels in the served index, cached per index."""
+        if self._versions is not None and self._versions[0] == info.index_id:
+            return self._versions[1]
+        col = self.client.get_collection(info.collection)
+        found: set[str] = set()
+        for offset in range(0, info.count, 1000):
+            rows = col.get(limit=min(1000, info.count - offset), offset=offset,
+                           include=["metadatas"])
+            found.update(str(m["doc_version"]) for m in rows.get("metadatas") or []
+                         if m and m.get("doc_version") is not None)
+        self._versions = (str(info.index_id), tuple(sorted(found)))
+        return self._versions[1]
+
+    def _where(self, question: str, info: IndexInfo,
+               include_superseded: bool) -> dict[str, Any] | None:
+        """The metadata filter, applied inside the Chroma query. Naming a year asks for the
+        document of that year (current or superseded); otherwise superseded documents are
+        excluded unless the caller says the user asked about an older version. `{}` means the
+        question names a year that no indexed document has."""
+        years = set(_YEARS.findall(question))
+        if years:
+            matched = [v for v in self._doc_versions(info) if any(y in v for y in years)]
+            if not matched:
+                return {}
+            return {"doc_version": matched[0]} if len(matched) == 1 else {
+                "doc_version": {"$in": matched}}
+        return None if include_superseded else {"superseded": False}

@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, field_validator
 
 class AskRequest(BaseModel):
     question: str = Field(min_length=3, max_length=500)
+    follow_up: bool = False   # follow-ups skip the cache and are never stored in it (3.3)
 
     @field_validator("question")
     @classmethod
@@ -33,7 +34,9 @@ class Passage(BaseModel):
     source: str
     section: str
     page: int | None = None
-    score: float = Field(description="Similarity, higher is closer (1 - cosine distance).")
+    score: float = Field(description="Relevance, higher is closer: cosine similarity blended with exact-term overlap.")
+    doc_version: str = ""        # lets the prompt label an older version as such
+    superseded: bool = False
 
 
 class Citation(BaseModel):
@@ -70,4 +73,4 @@ class AskResponse(BaseModel):
     confidence: Literal["high", "medium", "low"]
     retrieved: list[RetrievedRef]
     provider: str
-    cached: bool = False
+    cached: bool = False   # added to the starter contract: the UI shows a cache chip (ADR 0002)

@@ -1,0 +1,11 @@
+# Question pairs for eval/tune_cache.py. Replace these with pairs about YOUR corpus: aim for
+# 8+ paraphrases and 8+ near-misses. Near-misses differ in exactly the thing that changes the
+# answer (a number, a year, a course, a programme).
+paraphrases:
+  - ["When is a student placed on academic warning?", "At what point does a student get an academic warning?"]
+  - ["What is the minimum attendance to sit the final exam?", "How much attendance do I need to be allowed in the final exam?"]
+  - ["How much is the late fee?", "What is the late payment fee?"]
+near_misses:
+  - ["What was the minimum attendance in the 2023 rules?", "What is the minimum attendance in the 2026 rules?"]
+  - ["How much is the BS fee per credit hour?", "How much is the MS fee per credit hour?"]
+  - ["When is a student placed on academic warning?", "When is a student placed on academic probation?"]

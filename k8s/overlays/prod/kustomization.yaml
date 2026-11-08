@@ -1,0 +1,11 @@
+# What cd.yml deploys: images from Docker Hub, tagged by commit SHA, never :latest.
+# cd.yml runs `kustomize edit set image` with the real user and ${{ github.sha }}; the values
+# below are placeholders so that `kustomize build | kubeconform` works in CI on every PR.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+images:
+  - {name: rahbar-api, newName: docker.io/REPLACE_DOCKERHUB_USER/rahbar-api, newTag: REPLACE_SHA}
+  - {name: rahbar-ui, newName: docker.io/REPLACE_DOCKERHUB_USER/rahbar-ui, newTag: REPLACE_SHA}
+  - {name: rahbar-indexer, newName: docker.io/REPLACE_DOCKERHUB_USER/rahbar-indexer, newTag: REPLACE_SHA}

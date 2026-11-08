@@ -1,120 +1,104 @@
-"""Optional Redis semantic cache. Failures are deliberately fail-open."""
+"""Semantic cache on Redis (section 3.3, ADR 0002).
+
+A question hits when its embedding is within CACHE_THRESHOLD cosine similarity of a cached one.
+Entries live under `rahbar:cache:<index_id>:<uuid>`, so they are tied to the index that
+produced them: after a re-index the API reads a new index_id, the old entries stop matching,
+and they are purged. The indexer never touches Redis (NetworkPolicy: redis from api only).
+"""
 
 from __future__ import annotations
 
-import hashlib
 import json
+import logging
 import math
 import re
-from typing import cast
+import uuid
+from typing import Any
 
-from ..config import Settings
+from ..routes import metrics
 from ..schemas import AskResponse
 
+log = logging.getLogger("rahbar.cache")
 
-def _cosine(left: list[float], right: list[float]) -> float:
-    if len(left) != len(right):
-        return -1.0
-    denom = math.sqrt(sum(x * x for x in left) * sum(y * y for y in right))
-    return sum(x * y for x, y in zip(left, right)) / denom if denom else -1.0
+PREFIX = "rahbar:cache:"
+MAX_ENTRIES = 2000   # a linear scan stays cheap; ADR 0002 says when to move to a vector index
+
+
+_YEARS = re.compile(r"\b(?:19|20)\d{2}\b")
+
+
+def cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    return dot / (na * nb) if na and nb else 0.0
 
 
 class SemanticCache:
-    def __init__(self, settings: Settings, retriever: object, provider: str) -> None:
-        self.settings = settings
-        self.retriever = retriever
-        self.provider = provider
-        if not settings.redis_url or not hasattr(retriever, "embed"):
-            self.prefix = ""
-            return
-        try:
-            collection = getattr(retriever, "collection", None)
-            metadata = getattr(collection, "metadata", None) or {}
-            fingerprint = metadata.get("index_fingerprint", "unversioned")
-            self.prefix = (f"rahbar:cache:{settings.collection}:{settings.embed_model}:"
-                           f"{fingerprint}:{provider}:")
-        except Exception:
-            # Cache metadata is optional; a store outage must not prevent retrieval from
-            # returning its own safe error response, or permit a stale unversioned hit.
-            self.prefix = ""
+    def __init__(self, redis_client: Any, threshold: float, ttl_seconds: int) -> None:
+        self.redis = redis_client
+        self.threshold = threshold
+        self.ttl = ttl_seconds
+        self._purged_for: str | None = None
 
-    def _client(self):
-        if not self.settings.redis_url:
-            return None
-        import redis
+    def ping(self) -> bool:
+        return bool(self.redis.ping())
 
-        return redis.Redis.from_url(self.settings.redis_url, decode_responses=True,
-                                   socket_connect_timeout=0.2, socket_timeout=0.2)
+    def invalidate_other_indexes(self, index_id: str) -> int:
+        """Delete every entry that belongs to a different index (invalidate on re-index)."""
+        if self._purged_for == index_id:
+            return 0
+        removed = 0
+        mine = f"{PREFIX}{index_id}:"
+        for key in self.redis.scan_iter(match=f"{PREFIX}*", count=500):
+            name = key.decode() if isinstance(key, bytes) else key
+            if not name.startswith(mine):
+                self.redis.delete(key)
+                removed += 1
+        self._purged_for = index_id
+        if removed:
+            log.info("cache invalidated after re-index", extra={"removed": removed,
+                                                               "index_id": index_id})
+        return removed
 
-    def lookup(self, question: str) -> AskResponse | None:
-        if not self.prefix:
-            return None
-        client = self._client()
-        embed = getattr(self.retriever, "embed", None)
-        if client is None or embed is None:
-            return None
-        try:
-            vector = embed(question)
-            exact = client.get(self.prefix + hashlib.sha256(question.casefold().strip().encode()).hexdigest())
-            best: tuple[float, str] | None = None
-            if exact:
-                best = (1.0, exact)
-            else:
-                for key in client.scan_iter(match=self.prefix + "*", count=100):
-                    raw = client.get(key)
-                    if not raw:
-                        continue
-                    item = json.loads(raw)
-                    saved_question = item.get("question")
-                    # A semantic match must not cross explicit policy years. Older
-                    # cache entries without their source question are not reusable.
-                    if not isinstance(saved_question, str):
-                        continue
-                    query_years = set(re.findall(r"\b(?:19|20)\d{2}\b", question))
-                    saved_years = set(re.findall(r"\b(?:19|20)\d{2}\b", saved_question))
-                    if query_years != saved_years:
-                        continue
-                    score = _cosine(vector, item["vector"])
-                    if best is None or score > best[0]:
-                        best = score, raw
-            threshold = self.settings.cache_similarity
-            if best and best[0] >= threshold:
-                payload = json.loads(best[1])["response"]
-                return AskResponse.model_validate(payload)
-        except Exception:
-            return None
-        return None
+    def lookup(self, vector: list[float], index_id: str,
+               question: str = "") -> tuple[AskResponse | None, float]:
+        """Return (cached response, similarity) for the best entry at or above the threshold.
+        A semantic match never crosses an explicit year: "2023 rules" must not reuse the answer
+        cached for "2026 rules", however close the embeddings are."""
+        self.invalidate_other_indexes(index_id)
+        keys = list(self.redis.scan_iter(match=f"{PREFIX}{index_id}:*", count=500))
+        if not keys:
+            return None, 0.0
+        best: tuple[float, dict[str, Any]] | None = None
+        for raw in self.redis.mget(keys):
+            if raw is None:
+                continue
+            entry = json.loads(raw)
+            if set(_YEARS.findall(question)) != set(_YEARS.findall(entry.get("q", ""))):
+                continue
+            sim = cosine(vector, entry["vec"])
+            if best is None or sim > best[0]:
+                best = (sim, entry)
+        if best is None or best[0] < self.threshold:
+            return None, best[0] if best else 0.0
+        # request_id and cached are per-request, not stored: the caller overwrites both.
+        return AskResponse(request_id="-", **best[1]["resp"]), best[0]
 
-    def save(self, question: str, response: AskResponse) -> None:
-        if not self.prefix:
-            return
-        client = self._client()
-        embed = getattr(self.retriever, "embed", None)
-        if client is None or embed is None or never_cache(response):
-            return
-        try:
-            vector = embed(question)
-            key = self.prefix + hashlib.sha256(question.casefold().strip().encode()).hexdigest()
-            client.setex(key, 3600, json.dumps({"question": question, "vector": vector,
-                                               "response": response.model_dump()}))
-        except Exception:
-            return
+    def store(self, vector: list[float], index_id: str, response: AskResponse,
+              question: str = "") -> bool:
+        """Callers decide whether an answer is safe to cache (see answer.py); this just writes."""
+        count = sum(1 for _ in self.redis.scan_iter(match=f"{PREFIX}{index_id}:*", count=500))
+        if count >= MAX_ENTRIES:
+            return False
+        payload = json.dumps({"q": question, "vec": vector, "resp": response.model_dump(
+            exclude={"request_id", "cached"})})
+        self.redis.set(f"{PREFIX}{index_id}:{uuid.uuid4().hex}", payload, ex=self.ttl)
+        metrics.CACHE_LOOKUPS.labels(result="stored").inc()
+        return True
 
 
-def never_cache(response: AskResponse) -> bool:
-    """Declines are not reusable answers; only validated contextual answers are cached."""
-    return not response.answered_from_context or not response.citations
-
-
-def invalidate(settings: Settings, provider: str | None = None) -> int:
-    """Delete cached answers for the active model and collection; return deleted keys."""
-    if not settings.redis_url:
-        return 0
+def connect(host: str, port: int) -> Any:
     import redis
 
-    prefix = f"rahbar:cache:{settings.collection}:{settings.embed_model}:"
-    client = redis.Redis.from_url(settings.redis_url, decode_responses=True)
-    keys = list(client.scan_iter(match=prefix + "*", count=500))
-    if provider:
-        keys = [key for key in keys if f":{provider}:" in key[len(prefix):]]
-    return cast(int, client.delete(*keys)) if keys else 0
+    return redis.Redis(host=host, port=port, socket_connect_timeout=2, socket_timeout=2)
