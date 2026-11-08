@@ -123,8 +123,17 @@ jobs:
         run: for i in api indexer ui; do kind load docker-image rahbar-$i:ci --name kind; done
       - name: deploy, run the indexer Job, wait for the rollout
         run: |
-          curl -sfL https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz | tar xz
-          sudo mv kustomize /usr/local/bin/
+          kustomize_archive="$(mktemp)"
+          kustomize_dir="$(mktemp -d)"
+          trap 'rm -f "$kustomize_archive"; rm -rf "$kustomize_dir"' EXIT
+          curl --fail --show-error --location --retry 5 --retry-all-errors \
+            --connect-timeout 20 --max-time 300 \
+            --output "$kustomize_archive" \
+            https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz
+          gzip -t "$kustomize_archive"
+          tar -xzf "$kustomize_archive" -C "$kustomize_dir" kustomize
+          "$kustomize_dir/kustomize" version
+          sudo install -m 0755 "$kustomize_dir/kustomize" /usr/local/bin/kustomize
           scripts/kind_deploy.sh
       - name: evaluate and enforce the section 5.4 gate
         run: |
