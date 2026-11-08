@@ -54,7 +54,7 @@ def chunk(doc: Document, size: int, overlap: int) -> list[Chunk]:
             for part in parts:
                 text = " ".join(part)
                 digest = hashlib.sha1(
-                    f"{doc.source}:{page.page}:{section}:{offset}:{text}".encode()
+                    f"{doc.source}:{page.page}:{section}:{offset}:{len(result)}:{text}".encode()
                 ).hexdigest()[:16]
                 result.append(Chunk(digest, text, doc.source, section, page.page,
                                     doc.doc_version, doc.superseded))

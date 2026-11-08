@@ -48,10 +48,11 @@ def answer_question(
                 if answer.answered_from_context and not answer.citations:
                     raise ValueError("context-supported answer must cite evidence")
                 break
-            except Exception:
+            except Exception as e:
+                log.exception("Generation or validation error: %s", e)
                 answer = None
                 if retry == 0:
-                    log.warning("generation validation failed; retrying")
+                     log.warning("generation validation failed; retrying")
         if answer is None:
             GENERATION_FAILURES.inc()
             answer_text = "I could not produce a validated answer from the retrieved documents."
