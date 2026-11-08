@@ -1,0 +1,13 @@
+﻿apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - api-deployment.yaml
+  - api-service.yaml
+  - ui-deployment.yaml
+  - ui-service.yaml
+  - chroma.yaml
+  - redis.yaml
+  - corpus-pvc.yaml
+  - indexer-cronjob.yaml
