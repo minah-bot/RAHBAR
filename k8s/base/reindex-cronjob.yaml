@@ -1,0 +1,93 @@
+# Weekly re-index with the same image, arguments and pod template as the Job (section 4.1).
+# Run it by hand with no redeploy:  kubectl create job --from=cronjob/reindex manual-1 -n rahbar
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: reindex
+  namespace: rahbar
+  labels: {app: indexer}
+spec:
+  schedule: "0 3 * * 0"          # Sundays 03:00
+  concurrencyPolicy: Forbid       # two indexers must never write at once
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      activeDeadlineSeconds: 3600
+      template:
+          metadata:
+            labels: {app: indexer}
+          spec:
+            restartPolicy: OnFailure
+            serviceAccountName: indexer
+            automountServiceAccountToken: false
+            enableServiceLinks: false          # nothing here uses Service env vars; pods find each other by DNS name
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 10001
+              runAsGroup: 10001
+              fsGroup: 10001
+              seccompProfile: {type: RuntimeDefault}
+            initContainers:
+              - name: wait-for-chroma-and-corpus
+                image: rahbar-indexer:dev
+                imagePullPolicy: IfNotPresent
+                command: ["python", "-c"]
+                args:
+                  - |
+                    # Chroma up AND documents present: `kubectl apply` then `make corpus-load` just works.
+                    import os, time, urllib.request
+                    for _ in range(300):
+                        try:
+                            urllib.request.urlopen("http://chroma:8000/api/v2/heartbeat", timeout=2)
+                            if any(not f.startswith(".") for f in os.listdir("/corpus")):
+                                raise SystemExit(0)
+                        except OSError:
+                            pass
+                        time.sleep(2)
+                    raise SystemExit("chroma or the corpus never became available")
+                resources:
+                  requests:
+                    cpu: 10m
+                    memory: 32Mi
+                  limits:
+                    cpu: 100m
+                    memory: 64Mi
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  readOnlyRootFilesystem: true
+                  capabilities:
+                    drop:
+                      - ALL
+                volumeMounts:
+                  - {name: corpus, mountPath: /corpus, readOnly: true}
+            containers:
+              - name: indexer
+                image: rahbar-indexer:dev
+                imagePullPolicy: IfNotPresent
+                args: []
+                envFrom:
+                  - configMapRef: {name: rahbar-config}
+                env:
+                  - {name: CORPUS_DIR, value: /corpus}
+                resources:
+                  requests:  # limits come from kubectl top: docs/ENGINEERING-NOTES.md
+                    cpu: 250m
+                    memory: 512Mi
+                  limits:
+                    cpu: "1"
+                    memory: 1Gi
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  readOnlyRootFilesystem: true
+                  capabilities:
+                    drop:
+                      - ALL
+                volumeMounts:
+                  - {name: corpus, mountPath: /corpus, readOnly: true}
+                  - {name: tmp, mountPath: /tmp}         # OCR scratch files
+            volumes:
+              - name: corpus
+                persistentVolumeClaim: {claimName: corpus, readOnly: true}
+              - {name: tmp, emptyDir: {}}

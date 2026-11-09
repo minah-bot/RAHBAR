@@ -1,7 +1,12 @@
 .git
+.github
 __pycache__
+*.pyc
+.venv
+venv
 .pytest_cache
 .mypy_cache
-.venv
-corpus
+.ruff_cache
 tests
+corpus
+*.log

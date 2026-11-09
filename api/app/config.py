@@ -41,11 +41,22 @@ class Settings:
     hosted_base_url: str = ""        # e.g. an OpenAI-compatible endpoint
     llm_api_key: str = field(default="", repr=False)   # from the Secret; never log it
 
-    relevance_floor: float = 0.25
-    redis_url: str = ""
-    cache_similarity: float = 0.97
-
     log_level: str = "INFO"
+
+    # Production steps (sections 3.3, 3.4, 4.3). All of these come from the ConfigMap.
+    relevance_floor: float = 0.55    # RELEVANCE_FLOOR: below this best-passage similarity, abstain
+    cache_enabled: bool = False      # CACHE_ENABLED: true on the cluster, false for local stubs
+    cache_threshold: float = 0.95    # CACHE_THRESHOLD: cosine similarity needed for a cache hit
+    cache_ttl_seconds: int = 604800  # CACHE_TTL_SECONDS: entries also expire after a week
+    redis_host: str = "redis"        # REDIS_HOST
+    redis_port: int = 6379           # REDIS_PORT
+    lexical_weight: float = 0.15     # LEXICAL_WEIGHT: share of the score from exact-term overlap
+    llm_timeout: float = 90.0        # LLM_TIMEOUT: seconds; a hung model must not hold a worker
+    index_ttl_seconds: float = 5.0   # how long the API trusts what it read about the index
+
+
+def _bool(name: str, default: bool) -> bool:
+    return os.environ.get(name, str(default)).strip().lower() in ("1", "true", "yes", "on")
 
 
 def get_settings() -> Settings:
@@ -62,8 +73,14 @@ def get_settings() -> Settings:
         ollama_url=os.environ.get("OLLAMA_URL", "http://host.minikube.internal:11434"),
         hosted_base_url=os.environ.get("HOSTED_BASE_URL", ""),
         llm_api_key=os.environ.get("LLM_API_KEY", ""),
-        relevance_floor=_float("RELEVANCE_FLOOR", 0.25),
-        redis_url=os.environ.get("REDIS_URL", ""),
-        cache_similarity=_float("CACHE_SIMILARITY", 0.97),
         log_level=os.environ.get("LOG_LEVEL", "INFO"),
+        relevance_floor=_float("RELEVANCE_FLOOR", 0.55),
+        cache_enabled=_bool("CACHE_ENABLED", False),
+        cache_threshold=_float("CACHE_THRESHOLD", 0.95),
+        cache_ttl_seconds=_int("CACHE_TTL_SECONDS", 604800),
+        redis_host=os.environ.get("REDIS_HOST", "redis"),
+        redis_port=_int("REDIS_PORT", 6379),
+        lexical_weight=_float("LEXICAL_WEIGHT", 0.15),
+        llm_timeout=_float("LLM_TIMEOUT", 90.0),
+        index_ttl_seconds=_float("INDEX_TTL_SECONDS", 5.0),
     )

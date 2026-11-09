@@ -18,9 +18,27 @@ LATENCY = Histogram(
     ["path"],
     buckets=(0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60),
 )
-CACHE_HITS = Counter("rahbar_cache_hits_total", "Semantic cache hits")
-ABSTENTIONS = Counter("rahbar_abstentions_total", "Unsupported questions declined")
-GENERATION_FAILURES = Counter("rahbar_generation_fallbacks_total", "Safe generation fallbacks")
+
+
+RETRIEVAL_SECONDS = Histogram(
+    "rahbar_retrieval_seconds", "Embed the question and query Chroma",
+    buckets=(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5),
+)
+GENERATION_SECONDS = Histogram(
+    "rahbar_generation_seconds", "LLM call including the one retry",
+    buckets=(0.5, 1, 2, 5, 10, 20, 30, 60, 120),
+)
+CACHE_LOOKUPS = Counter("rahbar_cache_lookups_total", "Semantic cache lookups", ["result"])
+ABSTENTIONS = Counter("rahbar_abstentions_total", "Answers declined", ["reason"])
+FALLBACKS = Counter("rahbar_fallbacks_total", "Safe canned responses after a failed retry")
+CITATIONS_DROPPED = Counter(
+    "rahbar_citations_dropped_total", "Model citations that matched no retrieved chunk"
+)
+VALIDATION_FAILURES = Counter("rahbar_validation_failures_total", "Model output rejected")
+TOKENS_IN = Histogram("rahbar_tokens_in", "Prompt tokens per request",
+                      buckets=(100, 250, 500, 1000, 2000, 4000, 8000))
+TOKENS_OUT = Histogram("rahbar_tokens_out", "Completion tokens per request",
+                       buckets=(25, 50, 100, 200, 400, 800, 1600))
 
 
 @router.get("/metrics")
