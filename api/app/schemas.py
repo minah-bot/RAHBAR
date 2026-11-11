@@ -40,9 +40,15 @@ class Passage(BaseModel):
 
 
 class Citation(BaseModel):
+    """Public citation metadata, created by the server from retrieved passages."""
     source: str
     section: str
     page: int | None = None
+
+
+class PassageCitation(BaseModel):
+    """Model output can identify evidence, but cannot supply citation metadata."""
+    passage_id: str
 
 
 class Answer(BaseModel):
@@ -50,7 +56,7 @@ class Answer(BaseModel):
 
     reasoning: str
     answer: str
-    citations: list[Citation]
+    citations: list[PassageCitation]
     answered_from_context: bool
     confidence: Literal["high", "medium", "low"]
 

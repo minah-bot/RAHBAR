@@ -10,7 +10,9 @@ WORK="$(mktemp -d)"
 trap 'kill $(jobs -p) 2>/dev/null || true; rm -rf "$WORK"' EXIT
 
 "$BIN/python" "$ROOT/eval/fake_ollama.py" --port 11500 >"$WORK/ollama.log" 2>&1 &
-"$BIN/chroma" run --path "$WORK/chroma" --port 8765 >"$WORK/chroma.log" 2>&1 &
+# CHROMA_RUN overrides the server command, e.g. the Rust binary the container image runs:
+#   CHROMA_RUN="/path/to/chroma run --path /tmp/c --host 127.0.0.1 --port 8765" scripts/local_e2e.sh
+${CHROMA_RUN:-$BIN/chroma run --path $WORK/chroma --port 8765} >"$WORK/chroma.log" 2>&1 &
 for _ in $(seq 1 40); do
   curl -sf localhost:8765/api/v2/heartbeat >/dev/null && curl -sf localhost:11500/ >/dev/null && break
   sleep 1

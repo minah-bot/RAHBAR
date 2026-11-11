@@ -1,0 +1,53 @@
+# RAHBAR corpus sources — official FAST-NUCES student and academic documents.
+# The August 2023 rules are kept for historical questions and marked superseded;
+# the June 2026 rules are the current academic-policy version in this corpus.
+
+documents:
+  - name: Undergraduate Academic Rules and Regulations August 2023
+    url: http://nu.edu.pk/public/downloads/Academic-Rules-Undergrad-Aug-2023.pdf
+    doc_version: "2023-08"
+    superseded: true
+    notes: >
+      Scanned 26-page PDF supplied for the RAHBAR corpus. OCR/text extraction
+      must be checked before indexing. Use for historical policy/version
+      comparison, not as the current rule source.
+
+  - name: Undergraduate Academic Rules and Regulations June 2026
+    url: https://nu.edu.pk/public/downloads/Academic_Rules_Handbook_2026.pdf
+    doc_version: "2026-06"
+    superseded: false
+    notes: >
+      Current 58-page undergraduate rules edition, listed by FAST-NUCES in its
+      official Downloads page. Includes numbered clauses and CGPA thresholds.
+
+  - name: Student Handbook June 2026
+    url: https://nu.edu.pk/public/downloads/Student_Handbook_2026.pdf
+    doc_version: "2026-06"
+    superseded: false
+    notes: >
+      64-page student handbook; includes financial, disciplinary, examination,
+      facilities, and multi-part conduct definitions.
+
+  - name: FAST-NUCES Annual Report 2023-2024
+    url: https://nu.edu.pk/public/downloads/AnnualReportForm/Annual%20Report%202023-24.pdf?261108=
+    doc_version: "2023-24"
+    superseded: false
+    notes: >
+      Official 85-page annual report. Includes program, campus, and enrollment
+      tables and general campus transport context, but no current route timetable.
+
+  - name: Fee Information (Prospectus 2026)
+    url: https://www.nu.edu.pk/Admissions/ProspectusUpload/Fee%20Information.pdf
+    doc_version: "2026-27"
+    superseded: false
+    notes: >
+      One-page official fee sheet for academic year 2026-27. Contains tuition,
+      miscellaneous fee, and refund schedule tables.
+
+  - name: Computing Programs (Prospectus 2026)
+    url: https://www.nu.edu.pk/Admissions/ProspectusUpload/Computing%20Programs.pdf
+    doc_version: "2026"
+    superseded: false
+    notes: >
+      26-page official computing-program prospectus with course-code, credit-hour,
+      and prerequisite tables, including CS1002 Programming Fundamentals.

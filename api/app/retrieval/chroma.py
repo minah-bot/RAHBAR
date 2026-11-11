@@ -23,17 +23,26 @@ class ChromaRetriever:
     name = "chroma"
 
     def __init__(self, settings: Settings, embedder: OllamaEmbedder | None = None) -> None:
-        import chromadb  # the thin client, from chromadb-client in requirements.txt
-        from chromadb.config import Settings as ChromaSettings
-
         self.settings = settings
         self.embedder = embedder or OllamaEmbedder(settings)
-        self.client = chromadb.HttpClient(host=settings.chroma_host, port=settings.chroma_port,
-                                          settings=ChromaSettings(anonymized_telemetry=False))
+        # No connection here. If Chroma is down when the pod starts, the process must still boot:
+        # /healthz stays 200 (liveness never depends on Chroma) and /readyz answers 503 naming it.
+        self.client: Any = None
         self._versions: tuple[str, tuple[str, ...]] | None = None   # (index_id, doc_versions)
         self._info: IndexInfo | None = None
         self._info_at = 0.0
         self._lock = threading.Lock()
+
+    def _get_client(self) -> Any:
+        """Connect on first use; the chromadb client connects (and raises) when constructed."""
+        if self.client is None:
+            import chromadb  # the thin client, from chromadb-client in requirements.txt
+            from chromadb.config import Settings as ChromaSettings
+
+            self.client = chromadb.HttpClient(
+                host=self.settings.chroma_host, port=self.settings.chroma_port,
+                settings=ChromaSettings(anonymized_telemetry=False))
+        return self.client
 
     # -- what is the index? -------------------------------------------------------
     def _resolve(self) -> IndexInfo:
@@ -41,13 +50,13 @@ class ChromaRetriever:
         try:
             name = base
             try:
-                pointer = self.client.get_collection(base + POINTER_SUFFIX)
+                pointer = self._get_client().get_collection(base + POINTER_SUFFIX)
                 got = pointer.get(ids=["active"])
                 if got["documents"]:
                     name = got["documents"][0]
             except Exception:  # no pointer yet (dummy index): read the base collection
                 pass
-            col = self.client.get_collection(name)
+            col = self._get_client().get_collection(name)
             meta = col.metadata or {}
             dim = meta.get("dimension")
             return IndexInfo(
@@ -115,7 +124,7 @@ class ChromaRetriever:
         if where == {}:                 # an explicit year with no document of that year
             return []
         try:
-            col = self.client.get_collection(info.collection)
+            col = self._get_client().get_collection(info.collection)
             query_embeddings: Any = [vector]
             res = col.query(query_embeddings=query_embeddings,
                             n_results=max(1, min(max(k * 3, k), info.count)), where=where,
@@ -153,7 +162,7 @@ class ChromaRetriever:
         """Distinct doc_version labels in the served index, cached per index."""
         if self._versions is not None and self._versions[0] == info.index_id:
             return self._versions[1]
-        col = self.client.get_collection(info.collection)
+        col = self._get_client().get_collection(info.collection)
         found: set[str] = set()
         for offset in range(0, info.count, 1000):
             rows = col.get(limit=min(1000, info.count - offset), offset=offset,

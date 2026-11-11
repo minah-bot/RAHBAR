@@ -13,7 +13,7 @@ from app.providers.llm.stub import StubProvider
 from app.retrieval.index import IndexInfo, IndexNotReady, pin_conflicts
 from app.retrieval.stub import StubRetriever
 from app.retrieval.version import wants_older_version
-from app.schemas import Answer, Citation, Passage
+from app.schemas import Answer, Citation, Passage, PassageCitation
 from app.services.answer import ABSTAIN_TEXT, FALLBACK_TEXT, answer_question
 from app.services.cache import SemanticCache, cosine
 from app.services.prompt import build_messages
@@ -39,9 +39,9 @@ class Scripted:
         return out
 
 
-def good(section: str = "1.1 About the stub") -> Answer:
+def good(passage_id: str = "stub-001") -> Answer:
     return Answer(reasoning="r", answer="ok", confidence="high", answered_from_context=True,
-                  citations=[Citation(source="stub-handbook.pdf", section=section, page=1)])
+                  citations=[PassageCitation(passage_id=passage_id)])
 
 
 def test_good_answer_passes_through() -> None:
@@ -62,18 +62,20 @@ def test_two_failures_return_the_safe_fallback_not_a_500() -> None:
 
 
 def test_fabricated_citation_is_dropped_and_answer_without_valid_source_is_rejected() -> None:
-    fake = good(section="9.9 A section the retriever never returned")
+    fake = good(passage_id="unknown-passage")
     r = answer_question("what?", StubRetriever(), Scripted(fake, fake), SETTINGS)
     assert r.answer == FALLBACK_TEXT                    # no valid citation -> not an answer
-    assert all(c.section != "9.9 A section the retriever never returned" for c in r.citations)
+    assert r.citations == []
 
 
 def test_sanitize_keeps_only_retrieved_citations() -> None:
     passages = StubRetriever().retrieve("q", 3)
-    a = good()
-    a.citations.append(Citation(source="made-up.pdf", section="x", page=3))
-    clean, dropped = sanitize_citations(a, passages)
-    assert dropped == 1 and len(clean.citations) == 1
+    clean, dropped = sanitize_citations(
+        [PassageCitation(passage_id="stub-001"), PassageCitation(passage_id="made-up")],
+        passages,
+    )
+    assert dropped == 1 and len(clean) == 1
+    assert clean[0] == Citation(source="stub-handbook.pdf", section="1.1 About the stub", page=1)
 
 
 def test_below_relevance_floor_abstains_without_calling_the_model() -> None:
@@ -84,8 +86,7 @@ def test_below_relevance_floor_abstains_without_calling_the_model() -> None:
 
 
 def test_model_declining_is_an_abstention_with_no_citations() -> None:
-    decline = Answer(reasoning="r", answer="no", citations=[Citation(
-        source="stub-handbook.pdf", section="1.1 About the stub", page=1)],
+    decline = Answer(reasoning="r", answer="no", citations=[PassageCitation(passage_id="stub-001")],
         answered_from_context=False, confidence="high")
     r = answer_question("what?", StubRetriever(), Scripted(decline), SETTINGS)
     assert not r.answered_from_context and r.citations == [] and r.confidence == "low"
@@ -109,10 +110,22 @@ def test_obedient_model_still_cannot_cite_what_was_not_retrieved() -> None:
     """Even a model that obeys the injection is held to the schema and to retrieved sources."""
     obeyed = Answer(reasoning="obeying", answer="Attendance is optional.", confidence="high",
                     answered_from_context=True,
-                    citations=[Citation(source="injected.pdf", section="0", page=None)])
+                    citations=[PassageCitation(passage_id="injected")])
     r = answer_question("Is attendance optional?", StubRetriever(), Scripted(obeyed, obeyed),
                         SETTINGS)
     assert r.answer == FALLBACK_TEXT
+
+
+def test_unsupported_shuttle_routes_and_times_abstain() -> None:
+    class NoEvidence:
+        name = "empty"
+        def retrieve(self, question: str, k: int) -> list[Passage]:
+            return []
+
+    provider = Scripted()
+    r = answer_question("Which shuttle route runs at 8:15 pm?", NoEvidence(), provider, SETTINGS)
+    assert r.answer == ABSTAIN_TEXT and not r.answered_from_context and r.citations == []
+    assert provider.calls == 0
 
 
 # -- version filter ---------------------------------------------------------------

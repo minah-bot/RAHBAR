@@ -103,8 +103,8 @@ make e2e                                   # indexer -> Chroma -> API -> eval ga
 
 ### Branches and CI/CD
 
-`dev` is for work; `main` is protected (no direct pushes, pull request required, `lint`, `test`, `manifests`, `build`, `scan`,
-`e2e-eval` required to pass, one approval). `ci.yml` runs on pull requests to `main` and pushes to `dev`; `cd.yml` runs on
+`dev` is for work. Before submission, configure protection for `main` (no direct pushes, pull request required, `lint`, `test`,
+`manifests`, `build`, `scan`, and `e2e-eval` required to pass, one approval). `ci.yml` runs on pull requests to `main` and pushes to `dev`; `cd.yml` runs on
 pushes to `main`: `test`, then `build-push` (images tagged with the commit SHA on Docker Hub), then `deploy` (an ephemeral
 kind cluster running exactly those SHA images, a rollout check and a smoke test through the Ingress).
 Required GitHub secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN` (an access token, not your password).

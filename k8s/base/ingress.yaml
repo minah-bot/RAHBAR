@@ -4,8 +4,8 @@ metadata:
   name: rahbar
   namespace: rahbar
   annotations:
-    # generation can take tens of seconds on a laptop CPU; the default 60 s would 504 the user
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    # generation takes 75 s typically and 180 s at p95 on a laptop CPU; it must outlast LLM_TIMEOUT or the user gets a 504
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
 spec:
   ingressClassName: nginx
   rules:
