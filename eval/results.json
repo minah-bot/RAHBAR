@@ -1,0 +1,40 @@
+{
+  "recall_at_3": 0.0,
+  "recall_at_5": 0.0,
+  "recall_at_5_by_type": {
+    "ordinary": 0.0
+  },
+  "citation_validity": 1.0,
+  "citations_checked": 5,
+  "grounded_answers_without_citation": 0,
+  "abstention_correctness": 1.0,
+  "must_abstain_questions": 0,
+  "answer_rate_on_answerable": 1.0,
+  "expect_hit_rate": 1.0,
+  "latency_seconds_p50": 0.16,
+  "latency_seconds_p95": 0.16,
+  "per_question": [
+    {
+      "id": "g01",
+      "type": "ordinary",
+      "recall_at_5": 0.0,
+      "answered_from_context": true,
+      "must_abstain": false,
+      "citations_valid": "1/1",
+      "seconds": 0.14
+    },
+    {
+      "id": "g02",
+      "type": "ordinary",
+      "recall_at_5": 0.0,
+      "answered_from_context": true,
+      "must_abstain": false,
+      "citations_valid": "4/4",
+      "seconds": 0.16
+    }
+  ],
+  "golden": "eval\\golden.yaml",
+  "questions": 2,
+  "total_questions": 15,
+  "complete": false
+}
