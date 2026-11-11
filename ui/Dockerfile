@@ -11,6 +11,7 @@ FROM nginxinc/nginx-unprivileged:1.27-alpine
 # The tag's Alpine packages lag behind security fixes (openssl, curl, expat, zlib...). Upgrade them at build
 # time as root, then return to the unprivileged user: the running container never has root.
 USER root
+ARG APK_REFRESH=0
 RUN apk upgrade --no-cache
 COPY nginx.conf /etc/nginx/nginx.conf
 COPY --from=stage /site /usr/share/nginx/html

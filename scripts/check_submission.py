@@ -172,21 +172,6 @@ def _function_body(src, name_pattern):
     return "\n".join(body)
 
 
-def _readiness_checks_nonempty(ready_body, chroma_source):
-    """Recognize a direct collection check or a route delegating to ChromaRetriever.check_ready.
-
-    Keep the actual zero-count guard mandatory when the readiness route delegates it.
-    """
-    direct = re.search(r"(count\(|n_results|is_empty|len\(|peek\()", ready_body or "", re.I)
-    if direct:
-        return True
-    delegated = re.search(r"\bcheck\s*\(\s*\)\s*if\s+check\s+else", ready_body or "")
-    if not delegated:
-        return False
-    check_ready = _function_body(chroma_source or "", r"check_ready")
-    return bool(check_ready and re.search(r"if\s+info\.count\s*==\s*0\s*:", check_ready))
-
-
 # ==========================================================================
 # 0 - starter kit leftovers
 # ==========================================================================
@@ -446,13 +431,11 @@ def check_api_and_pin():
                 "becomes a cluster-wide restart storm")
 
     # readiness must check a non-empty collection
-    health_source = read("api/app/routes/health.py") or src
-    ready = _function_body(health_source, r"\w*read(y|iness)\w*")
+    ready = _function_body(src, r"\w*read(y|iness)\w*")
     if ready is None:
         warn(s, "could not locate the readiness handler - check by hand")
     else:
-        chroma_source = read("api/app/retrieval/chroma.py")
-        soft(_readiness_checks_nonempty(ready, chroma_source), s,
+        soft(bool(re.search(r"(count\(|n_results|is_empty|len\(|peek\()", ready, re.I)), s,
              "readiness appears to check the collection is non-empty",
              "readiness does not look like it checks for a NON-EMPTY collection - required")
 
