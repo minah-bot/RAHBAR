@@ -1,0 +1,9 @@
+﻿NAME                      IMAGE
+api-7856fb875c-4tvc6      rahbar-api:dev
+api-7856fb875c-d2dqs      rahbar-api:dev
+api-7856fb875c-ms8n4      rahbar-api:dev
+chroma-5db6587866-xzlbf   chromadb/chroma:1.0.12
+redis-6b9985dd6b-78xbh    redis:7.4.2-alpine
+reindex-manual-l5j8m      rahbar-indexer:dev
+ui-5b6647cd98-4bhxl       rahbar-ui:dev
+ui-5b6647cd98-xzvnh       rahbar-ui:dev

@@ -1,0 +1,5 @@
+﻿NAME     READY   UP-TO-DATE   AVAILABLE   AGE
+api      3/3     3            3           3d7h
+chroma   1/1     1            1           3d7h
+redis    1/1     1            1           3d7h
+ui       2/2     2            2           3d7h

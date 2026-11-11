@@ -1,0 +1,10 @@
+﻿kubectl : No resources found in rahbar namespace.
+At line:1 char:1
++ kubectl get hpa -n rahbar 2>&1 | Out-File -Encoding 
+utf8 docs/evidenc ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (No resource 
+   s found in rahbar namespace.:String) [], RemoteExcep  
+  tion
+    + FullyQualifiedErrorId : NativeCommandError
+ 
