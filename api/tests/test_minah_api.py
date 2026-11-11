@@ -94,7 +94,7 @@ def test_development_ui_is_served_by_api(client: TestClient) -> None:
 def test_unsupported_provider_output_gets_safe_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.config import Settings
     from app.logjson import request_id_var
-    from app.schemas import Answer, Citation, Passage
+    from app.schemas import Answer, Passage, PassageCitation
     from app.services.answer import answer_question
 
     class Retriever:
@@ -107,7 +107,7 @@ def test_unsupported_provider_output_gets_safe_fallback(monkeypatch: pytest.Monk
         name = "test"
         def generate(self, question: str, passages: list[Passage]) -> Answer:
             return Answer(reasoning="", answer="fabricated", citations=[
-                Citation(source="elsewhere", section="99")], answered_from_context=True,
+                PassageCitation(passage_id="not-retrieved")], answered_from_context=True,
                 confidence="high")
 
     request_id_var.set("fallback-test")

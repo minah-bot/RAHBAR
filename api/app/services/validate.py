@@ -2,22 +2,18 @@
 
 from __future__ import annotations
 
-from ..schemas import Answer, Citation, Passage
+from ..schemas import Citation, Passage, PassageCitation
 
 
-def sanitize_citations(answer: Answer, passages: list[Passage]) -> tuple[Answer, int]:
-    """Drop citations the retriever never returned and return how many were dropped.
-
-    A citation naming a (source, section) that was not retrieved is fabricated. We remove
-    it and count it (rahbar_citations_dropped_total) so the hallucination rate stays visible
-    even though the user never sees the fake."""
-    by_key = {(p.source, p.section): p for p in passages}
+def sanitize_citations(citations: list[PassageCitation], passages: list[Passage]) -> tuple[list[Citation], int]:
+    """Resolve model passage IDs to citation metadata from this request's retrieval only."""
+    by_id = {p.chunk_id: p for p in passages}
     kept: list[Citation] = []
-    seen: set[tuple[str, str]] = set()
-    for c in answer.citations:
-        key = (c.source, c.section)
-        if key in by_key and key not in seen:
-            seen.add(key)
-            kept.append(Citation(source=c.source, section=c.section, page=by_key[key].page))
-    dropped = len(answer.citations) - len(kept)
-    return answer.model_copy(update={"citations": kept}), max(dropped, 0)
+    seen: set[str] = set()
+    for citation in citations:
+        passage = by_id.get(citation.passage_id)
+        if passage is not None and citation.passage_id not in seen:
+            seen.add(citation.passage_id)
+            kept.append(Citation(source=passage.source, section=passage.section, page=passage.page))
+    dropped = len(citations) - len(kept)
+    return kept, max(dropped, 0)
