@@ -31,5 +31,6 @@ data:
   # 0.1: facts and JSON want near-deterministic output; 0 is not used because it does not
   # remove hallucination (absent knowledge stays absent) and some models loop at exactly 0.
   TEMPERATURE: "0.1"
-  LLM_TIMEOUT: "90"
+  # CPU Ollama measured p50 75 s, p95 180 s (eval/baseline.json): the default 90 s turned slow answers into fallbacks
+  LLM_TIMEOUT: "240"
   LOG_LEVEL: "INFO"
