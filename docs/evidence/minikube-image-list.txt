@@ -1,0 +1,16 @@
+registry.k8s.io/pause:3.10.2
+registry.k8s.io/kube-scheduler:v1.37.0
+registry.k8s.io/kube-proxy:v1.37.0
+registry.k8s.io/kube-controller-manager:v1.37.0
+registry.k8s.io/kube-apiserver:v1.37.0
+registry.k8s.io/etcd:3.7.0-0
+registry.k8s.io/coredns/coredns:v1.14.6
+gcr.io/k8s-minikube/storage-provisioner:v5
+docker.io/library/redis:7.4.2-alpine
+docker.io/library/rahbar-ui:dev
+docker.io/library/rahbar-indexer:dev
+docker.io/library/rahbar-api:dev
+docker.io/library/busybox:1.36
+docker.io/kindest/kindnetd:v20260820-69b56db7
+docker.io/curlimages/curl:8.12.1
+docker.io/chromadb/chroma:1.0.12

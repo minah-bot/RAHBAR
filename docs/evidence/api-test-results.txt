@@ -1,0 +1,28 @@
+RAHBAR API TEST RESULTS
+
+Test 1: Admission Fee
+Question: What is the admission fee at FAST-NUCES?
+Answer: Rs 30,000
+Status: 200
+Citation: fee-structure-page.html
+Answered from context: True
+Confidence: High
+Result: PASS
+
+Test 2: SGPA
+Question: What does SGPA mean?
+Answer: Semester Grade Point Average
+Status: 200
+Citations: grading-page.html, fee-structure-page.html, academic-rules-handbook-jun-2026.pdf
+Answered from context: True
+Confidence: High
+Result: PASS
+
+Test 3: Unsupported Question
+Question: What is the university library opening time on Sunday?
+Answer: Not available
+Status: 200
+Citations: None
+Answered from context: False
+Confidence: Low
+Result: PASS
