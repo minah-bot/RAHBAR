@@ -1,0 +1,9 @@
+POD                       IMAGE                    IMAGE_ID
+api-7856fb875c-4tvc6      rahbar-api:dev           sha256:17e5517afed7abc6b93e34480b878d3a69abbd5273f5d69323f8231f11649085
+api-7856fb875c-d2dqs      rahbar-api:dev           sha256:17e5517afed7abc6b93e34480b878d3a69abbd5273f5d69323f8231f11649085
+api-7856fb875c-ms8n4      rahbar-api:dev           sha256:17e5517afed7abc6b93e34480b878d3a69abbd5273f5d69323f8231f11649085
+chroma-5db6587866-xzlbf   chromadb/chroma:1.0.12   docker.io/chromadb/chroma@sha256:28a3b2c05c74c83686c2273d4d0994b80c481805d0f47887f289c53a4616e592
+redis-6b9985dd6b-78xbh    redis:7.4.2-alpine       docker.io/library/redis@sha256:02419de7eddf55aa5bcf49efb74e88fa8d931b4d77c07eff8a6b2144472b6952
+reindex-manual-l5j8m      rahbar-indexer:dev       sha256:2303616da4304ad2479e4d6f773daabe0d4c101ff983fdd638022a16d9eeba47
+ui-5b6647cd98-4bhxl       rahbar-ui:dev            sha256:c6bca3be325f4b752c1945aebbf106c25f1f09ec24bc662008350b8efd1bf44e
+ui-5b6647cd98-xzvnh       rahbar-ui:dev            sha256:c6bca3be325f4b752c1945aebbf106c25f1f09ec24bc662008350b8efd1bf44e
