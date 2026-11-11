@@ -1,61 +1,70 @@
 # Failure analysis
 
-# Failure analysis
+Break **four** of the six stages on purpose, one at a time, restore each, and fill one block per stage. Every number below
+must come from your own run: the blocks list what to do and where the evidence appears, and leave the results to you.
+Before each experiment: `make eval` once as the healthy reference (`cp eval/results.json /tmp/healthy.json`).
+After each: restore, re-index if needed (`make index`), and check `make eval` returns to the reference.
 
-The following are failure scenarios derived from the implemented contracts. They are
-diagnostic guidance, not claims that fault injection was run against a live deployment.
-Run these checks and add observed timestamps/logs before submission.
+How the system exposes each stage (so you can diagnose it *as if you had not caused it*):
 
-## Extraction · image-only PDF without OCR runtime
+| Where it shows | What it tells you |
+| --- | --- |
+| request log line `answered` | `chunk_ids`, `scores`, `abstained`, `reason`: the retrieved context, where five of six failures are visible |
+| `rahbar_abstentions_total{reason}` | `below_relevance_floor` rising = retrieval is returning weak passages |
+| `rahbar_citations_dropped_total`, `rahbar_validation_failures_total`, `rahbar_fallbacks_total` | the model is inventing sources, or breaking the schema |
+| indexer log `chunked` / `chunking summary` | `ocr_pages`, `empty_pages`, `chunks`, `amplification` per document |
+| `eval/results.json` | `recall_at_5_by_type`, `citation_validity`, `abstention_correctness`, `answer_rate_on_answerable` |
 
-- **What fails:** A PDF page has no text layer and poppler or Tesseract is unavailable.
-- **Symptom:** The indexer exits non-zero with the page number and OCR error. It must not
-  silently index an empty page as if extraction succeeded.
-- **Diagnosis:** Check the indexer Job log, `Page.ocr`, and whether `pdftotext` returns
-  useful content. The indexer Dockerfile installs the OCR binaries; a local environment
-  must install them separately.
-- **Remedy:** Install the declared system packages and language data, then inspect OCR
-  output for the scan. Handwriting and low-resolution scans may need manual correction.
+## Stage A · Extraction
+- **What we broke:** index the scanned PDF without OCR: set `OCR_ENABLED: "false"` in the indexer's environment
+  (a temporary `env` entry on the Job, or `kubectl set env`), `make index`.
+- **Symptom:** **TEAM TODO** (expected: questions about the scanned document abstain or retrieve unrelated text).
+- **Diagnosis, as if we had not caused it:** the indexer log line for that document shows `empty_pages` equal to its page
+  count and `chunks: 0` (or very few); `ocr_pages: 0`. The metric that moves: `must-abstain`-style abstentions on questions that
+  *should* be answerable, i.e. `answer_rate_on_answerable` falls and `recall_at_5` for that document's questions is 0.
+- **Remedy:** **TEAM TODO** (remove the switch; OCR is on by default; add a check that fails the Job when a document
+  yields no chunks).
 
-## Chunking · oversized or repeated text
+## Stage B · Chunking
+- **What we broke:** `CHUNK_STRATEGY=fixed`, `CHUNK_SIZE=100`, `CHUNK_OVERLAP=0` on the indexer (fixed windows, no sections).
+- **Symptom:** **TEAM TODO** (expected: exact-term and clause questions fail; citations lose their section names).
+- **Diagnosis, as if we had not caused it:** `chunking summary` shows `chunks` jumping and `amplification` near 1.0 with no
+  overlap; `recall_at_5_by_type.exact` collapses first; retrieved `section` values in the request log are empty strings.
+- **Remedy:** **TEAM TODO** (restore the structure-aware chunker; the CI gate would have blocked this change).
 
-- **What fails:** A large paragraph is split at the configured word boundary, or a
-  repeated short line is incorrectly classified as page furniture.
-- **Symptom:** An answer-bearing clause spans neighboring chunks, or a phrase disappears.
-- **Diagnosis:** Inspect the cleaned page text and chunk boundaries for the affected source;
-  compare `CHUNK_SIZE` and `CHUNK_OVERLAP`. The overlap is in whitespace-delimited words.
-- **Remedy:** Adjust chunk settings based on measured recall and review repeated-line
-  removal on that document. Do not claim a recall improvement without rerunning evaluation.
+## Stage C · Retrieval
+- **What we broke:** (a) `TOP_K: "1"` in the ConfigMap, restart api; and (b) the API-only `EMBED_MODEL` change that is also
+  the section 4.4 demonstration: `kubectl edit configmap rahbar-config -n rahbar`, change `EMBED_MODEL`,
+  `kubectl rollout restart deployment/api -n rahbar`.
+- **Symptom:** **TEAM TODO** (a) recall@5 is capped at what one chunk can hold and multi-clause answers are incomplete;
+  (b) the new pods sit at `0/1 READY` and the old ones keep serving.
+- **Diagnosis, as if we had not caused it:** (a) `scores` list has a single entry per request in the `answered` log line and
+  `recall_at_5` equals recall@1; (b) `kubectl get pods -n rahbar` shows `0/1`, `kubectl logs <pod>` shows
+  `embedding pin violated` naming both models, and `GET /readyz` returns 503 with `failed: embedding-pin`.
+- **Remedy:** **TEAM TODO** (restore the values; the pin makes (b) impossible to miss).
+- Evidence to commit: `docs/evidence/pin-0of1.png` (the pod at 0/1 and the log line).
 
-## Retrieval · stale embedding pin or weak relevance
+## Stage D · Prompt
+- **What we broke:** on a throwaway branch, delete rule 1 ("Answer ONLY from the passages...") and rule 3 from `SYSTEM` in
+  `api/app/services/prompt.py`, rebuild and load the api image, `kubectl set image`.
+- **Symptom:** **TEAM TODO** (expected: must-abstain questions get a fluent answer from the model's own knowledge).
+- **Diagnosis, as if we had not caused it:** `abstention_correctness` drops below 1.0 in the eval and the gate fails;
+  `rahbar_abstentions_total{reason="model_declined"}` stops increasing while retrieval scores for those questions stay low.
+- **Remedy:** **TEAM TODO** (restore the prompt; the gate is the guard).
 
-- **What fails:** Runtime `EMBED_MODEL` differs from collection metadata, or the selected
-  similarity falls below `RELEVANCE_FLOOR`.
-- **Symptom:** `/readyz` returns 503 and names the model mismatch; alternatively retrieval
-  returns no evidence and the answer path abstains. Retrieval scores appear in request logs.
-- **Diagnosis:** Compare `EMBED_MODEL` in both processes with the Chroma collection
-  metadata; check collection count and the configured score floor.
-- **Remedy:** Use the pinned model consistently and re-index with the separate indexer.
-  Lower a relevance floor only after measuring false positives and recall.
+## Stage E · Source
+- **What we broke:** on a throwaway branch, make `answer_question` pass `include_superseded=True` always (or remove the
+  `where` filter in `ChromaRetriever.retrieve`), then ask a version-sensitive question.
+- **Symptom:** **TEAM TODO** (expected: the answer quotes the superseded number, with a real citation to the old PDF).
+- **Diagnosis, as if we had not caused it:** the retrieved `source` in the log line is the superseded document; the
+  citation validity is still 100%, because the citation is genuine, which is why this needs the `version` golden questions.
+- **Remedy:** **TEAM TODO** (restore the filter; `retrieval/version.py` is the only door back to old versions).
 
-## Source filtering · superseded policy content
+## Stage F · Generation
+- **What we broke:** `TEMPERATURE: "1.2"` in the ConfigMap, restart api.
+- **Symptom:** **TEAM TODO**
+- **Diagnosis, as if we had not caused it:** retrieved chunks and scores are unchanged (retrieval is fine) while
+  `rahbar_validation_failures_total` / `rahbar_citations_dropped_total` rise: the model, not the pipeline, got worse.
+- **Remedy:** **TEAM TODO**
 
-- **What fails:** A retrieved chunk is erroneously marked current, or a historical query
-  lacks a matching `doc_version`.
-- **Symptom:** Current queries may cite an obsolete rule, or version-specific retrieval
-  returns no passage. Each retrieved response exposes source, section, page and score.
-- **Diagnosis:** Inspect `_index.json` or fixture front matter and the stored Chroma
-  metadata. Compare the query year with `doc_version`.
-- **Remedy:** Correct source metadata and re-run the indexer. For a query with a year the
-  retriever searches that version; otherwise it filters superseded records.
-
-## Generation · malformed output or fabricated citation
-
-- **What fails:** The provider returns invalid schema data, cites outside the retrieved
-  passages, or answers without evidence.
-- **Symptom:** The service retries generation once, then returns a safe abstention with no
-  citations; the fallback and abstention Prometheus counters increase.
-- **Diagnosis:** Inspect provider/model configuration and the counter names at `/metrics`.
-  Keys are not logged. Stub mode can validate API wiring without an external model.
-- **Remedy:** Fix the provider endpoint/model or prompt issue and verify citations against
-  retrieved source/section/page. Never weaken citation validation to make a result pass.
+> Remember the lecture's rule: only F is the model's fault, so check A to E first.

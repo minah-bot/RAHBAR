@@ -10,11 +10,20 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class AskRequest(BaseModel):
     question: str = Field(min_length=3, max_length=500)
+    follow_up: bool = False   # follow-ups skip the cache and are never stored in it (3.3)
+
+    @field_validator("question")
+    @classmethod
+    def question_must_contain_text(cls, value: str) -> str:
+        value = value.strip()
+        if len(value) < 3:
+            raise ValueError("question must contain at least three non-whitespace characters")
+        return value
 
 
 class Passage(BaseModel):
@@ -25,13 +34,21 @@ class Passage(BaseModel):
     source: str
     section: str
     page: int | None = None
-    score: float = Field(description="Similarity, higher is closer (1 - cosine distance).")
+    score: float = Field(description="Relevance, higher is closer: cosine similarity blended with exact-term overlap.")
+    doc_version: str = ""        # lets the prompt label an older version as such
+    superseded: bool = False
 
 
 class Citation(BaseModel):
+    """Public citation metadata, created by the server from retrieved passages."""
     source: str
     section: str
     page: int | None = None
+
+
+class PassageCitation(BaseModel):
+    """Model output can identify evidence, but cannot supply citation metadata."""
+    passage_id: str
 
 
 class Answer(BaseModel):
@@ -39,7 +56,7 @@ class Answer(BaseModel):
 
     reasoning: str
     answer: str
-    citations: list[Citation]
+    citations: list[PassageCitation]
     answered_from_context: bool
     confidence: Literal["high", "medium", "low"]
 
@@ -62,4 +79,4 @@ class AskResponse(BaseModel):
     confidence: Literal["high", "medium", "low"]
     retrieved: list[RetrievedRef]
     provider: str
-    cached: bool = False
+    cached: bool = False   # added to the starter contract: the UI shows a cache chip (ADR 0002)

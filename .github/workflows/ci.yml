@@ -1,0 +1,161 @@
+name: ci
+on:
+  pull_request:
+    branches: [main, dev]
+  push:
+    branches: [dev]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install -r api/requirements-dev.txt -r indexer/requirements-dev.txt
+      - run: ruff check api indexer eval corpus
+      - run: cd api && mypy app
+      - run: cd indexer && mypy pipeline
+      # The UI is one static HTML file with no build step, so there is no eslint/tsc to run.
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install -r api/requirements-dev.txt -r indexer/requirements-dev.txt
+      # Stub retriever and stub provider: no network, no model, no cluster.
+      - run: cd api && pytest -q --cov=app --cov-report=term-missing --cov-fail-under=60
+      - run: cd indexer && pytest -q --cov=pipeline --cov-report=term
+      - run: pip install pyyaml==6.0.2 && cd eval && python -m pytest -q test_run_eval.py
+
+  manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install kustomize and kubeconform
+        run: |
+          kustomize_archive="$(mktemp)"
+          trap 'rm -f "$kustomize_archive"' EXIT
+          curl --fail --show-error --location --retry 5 --retry-all-errors \
+            --connect-timeout 20 --max-time 300 \
+            --output "$kustomize_archive" \
+            https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz
+          gzip -t "$kustomize_archive"
+          tar -xzf "$kustomize_archive" kustomize
+          ./kustomize version
+          curl -sfL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
+          sudo mv kustomize kubeconform /usr/local/bin/
+      - run: kustomize build k8s/overlays/prod | kubeconform -strict -summary -kubernetes-version 1.30.0
+      - run: kustomize build k8s/overlays/dev | kubeconform -strict -summary -kubernetes-version 1.30.0
+
+  build:
+    needs: [lint, test]               # do not spend build minutes on code that already fails
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image: [api, indexer, ui]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      # push is false: a pull request never publishes anything.
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.image }}
+          push: false
+          load: true
+          tags: rahbar-${{ matrix.image }}:ci
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+            APK_REFRESH=${{ github.run_id }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+      - run: docker save rahbar-${{ matrix.image }}:ci -o ${{ matrix.image }}.tar
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-${{ matrix.image }}
+          path: ${{ matrix.image }}.tar
+          retention-days: 1
+
+  scan:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [api, indexer, ui]
+    steps:
+      - uses: actions/download-artifact@v4
+        with: {name: "image-${{ matrix.image }}"}
+      - run: docker load -i ${{ matrix.image }}.tar
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25   # v0.36.0
+        with:
+          image-ref: rahbar-${{ matrix.image }}:ci
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true      # only findings that have a fix available fail the build
+          exit-code: "1"
+
+  e2e-eval:
+    needs: [build, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install httpx==0.28.1 pyyaml==6.0.2
+      - uses: actions/download-artifact@v4
+        with: {pattern: "image-*", merge-multiple: true}
+      - run: for i in api indexer ui; do docker load -i $i.tar; done
+      - name: start the fake model on the host (embeddings and generation)
+        run: |
+          nohup python eval/fake_ollama.py --port 11500 > fake-ollama.log 2>&1 &
+          for _ in $(seq 1 20); do curl -sf localhost:11500/ && break; sleep 1; done
+      - uses: helm/kind-action@v1
+        with: {cluster_name: kind}
+      - name: load images into kind
+        run: for i in api indexer ui; do kind load docker-image rahbar-$i:ci --name kind; done
+      - name: deploy, run the indexer Job, wait for the rollout
+        run: |
+          kustomize_archive="$(mktemp)"
+          kustomize_dir="$(mktemp -d)"
+          trap 'rm -f "$kustomize_archive"; rm -rf "$kustomize_dir"' EXIT
+          curl --fail --show-error --location --retry 5 --retry-all-errors \
+            --connect-timeout 20 --max-time 300 \
+            --output "$kustomize_archive" \
+            https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz
+          gzip -t "$kustomize_archive"
+          tar -xzf "$kustomize_archive" -C "$kustomize_dir" kustomize
+          "$kustomize_dir/kustomize" version
+          sudo install -m 0755 "$kustomize_dir/kustomize" /usr/local/bin/kustomize
+          scripts/kind_deploy.sh
+      - name: evaluate and enforce the section 5.4 gate
+        run: |
+          kubectl port-forward -n rahbar svc/api 8000:8000 > pf.log 2>&1 &
+          sleep 5
+          python eval/run_eval.py --api http://localhost:8000 \
+            --golden eval/fixtures/golden.fixture.yaml \
+            --baseline eval/fixtures/baseline.fixture.json \
+            --out eval-results.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: eval-results, path: eval-results.json, if-no-files-found: ignore}
+      - name: diagnostics on failure
+        if: failure()
+        run: |
+          kubectl get pods,svc,pvc,networkpolicy -n rahbar -o wide || true
+          echo "=== events"; kubectl get events -n rahbar --sort-by=.lastTimestamp | tail -40 || true
+          echo "=== chroma-0"; kubectl describe pod chroma-0 -n rahbar | tail -60 || true
+          echo "=== chroma-0 logs"; kubectl logs chroma-0 -n rahbar --tail=60 || true
+          echo "=== chroma-0 previous logs"; kubectl logs chroma-0 -n rahbar --previous --tail=60 || true
+          echo "=== indexer"; kubectl logs job/indexer -n rahbar --all-containers --tail=60 || true
+          echo "=== api"; kubectl describe pod -l app=api -n rahbar | tail -60 || true
+          kubectl logs deploy/api -n rahbar --tail=60 || true

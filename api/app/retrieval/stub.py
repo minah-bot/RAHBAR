@@ -42,5 +42,13 @@ _PASSAGES = [
 class StubRetriever:
     name = "stub"
 
-    def retrieve(self, question: str, k: int) -> list[Passage]:
+    def retrieve(
+        self, question: str, k: int, *, include_superseded: bool = False
+    ) -> list[Passage]:
         return [p.model_copy() for p in _PASSAGES[:k]]
+
+    def index_id(self) -> str | None:
+        return None   # no index, so nothing for the cache to scope itself to
+
+    def check_ready(self) -> dict[str, object]:
+        return {"retriever": "stub"}

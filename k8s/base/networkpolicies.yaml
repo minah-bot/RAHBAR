@@ -1,0 +1,108 @@
+# Deny by default, then open only the paths the architecture needs (section 4.7).
+#   Ingress controller -> ui, api        ui -> api        api -> chroma, redis, Ollama on the host
+#   indexer -> chroma, Ollama on the host    chroma <- api and indexer ONLY    redis <- api ONLY
+# The ui pod has no rule that reaches chroma, so it cannot. Needs a CNI that enforces policy
+# (minikube --cni=calico); the default CNI accepts these objects and ignores them.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: default-deny-all, namespace: rahbar}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+# Default-deny egress also blocks DNS: every Service name would stop resolving.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-dns, namespace: rahbar}
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: ui-from-ingress, namespace: rahbar}
+spec:
+  podSelector: {matchLabels: {app: ui}}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: ingress-nginx}
+      ports:
+        - {protocol: TCP, port: 8080}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: api-from-ingress-and-ui, namespace: rahbar}
+spec:
+  podSelector: {matchLabels: {app: api}}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: ingress-nginx}
+        - podSelector: {matchLabels: {app: ui}}
+      ports:
+        - {protocol: TCP, port: 8000}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: api-egress, namespace: rahbar}
+spec:
+  podSelector: {matchLabels: {app: api}}
+  policyTypes: [Egress]
+  egress:
+    - to: [{podSelector: {matchLabels: {app: chroma}}}]
+      ports: [{protocol: TCP, port: 8000}]
+    - to: [{podSelector: {matchLabels: {app: redis}}}]
+      ports: [{protocol: TCP, port: 6379}]
+    # Ollama on the laptop. Replace the address with the output of:
+    #   minikube ssh "grep host.minikube.internal /etc/hosts"      (make host-ip)
+    - to: [{ipBlock: {cidr: 192.168.49.1/32}}]
+      ports: [{protocol: TCP, port: 11434}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: chroma-from-api-and-indexer, namespace: rahbar}
+spec:
+  podSelector: {matchLabels: {app: chroma}}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {matchLabels: {app: api}}
+        - podSelector: {matchLabels: {app: indexer}}
+      ports:
+        - {protocol: TCP, port: 8000}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: redis-from-api, namespace: rahbar}
+spec:
+  podSelector: {matchLabels: {app: redis}}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {matchLabels: {app: api}}
+      ports:
+        - {protocol: TCP, port: 6379}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: indexer-egress, namespace: rahbar}
+spec:
+  podSelector: {matchLabels: {app: indexer}}
+  policyTypes: [Egress]
+  egress:
+    - to: [{podSelector: {matchLabels: {app: chroma}}}]
+      ports: [{protocol: TCP, port: 8000}]
+    - to: [{ipBlock: {cidr: 192.168.49.1/32}}]
+      ports: [{protocol: TCP, port: 11434}]

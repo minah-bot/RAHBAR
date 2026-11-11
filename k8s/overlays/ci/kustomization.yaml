@@ -1,0 +1,39 @@
+# e2e-eval and cd.yml's deploy job, on a kind cluster: the three fixture documents from a
+# ConfigMap instead of the corpus PVC, and eval/fake_ollama.py on the runner instead of a model.
+# The workflow replaces KIND_GATEWAY with the kind network's gateway address.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+images:
+  - {name: rahbar-api, newTag: ci}
+  - {name: rahbar-ui, newTag: ci}
+  - {name: rahbar-indexer, newTag: ci}
+patches:
+  - target: {kind: ConfigMap, name: rahbar-config}
+    patch: |-
+      - {op: replace, path: /data/EMBED_MODEL, value: hash-256}
+      - {op: replace, path: /data/LLM_MODEL, value: fake}
+      - {op: replace, path: /data/OLLAMA_URL, value: "http://KIND_GATEWAY:11500"}
+      - {op: replace, path: /data/RELEVANCE_FLOOR, value: "0.15"}
+      - {op: replace, path: /data/CHUNK_SIZE, value: "120"}
+      - {op: replace, path: /data/CHUNK_OVERLAP, value: "20"}
+  - target: {kind: NetworkPolicy, name: api-egress}
+    patch: |-
+      - {op: replace, path: /spec/egress/2, value: {to: [{ipBlock: {cidr: KIND_GATEWAY/32}}], ports: [{protocol: TCP, port: 11500}]}}
+  - target: {kind: NetworkPolicy, name: indexer-egress}
+    patch: |-
+      - {op: replace, path: /spec/egress/1, value: {to: [{ipBlock: {cidr: KIND_GATEWAY/32}}], ports: [{protocol: TCP, port: 11500}]}}
+  - target: {kind: Job, name: indexer}
+    patch: |-
+      - {op: replace, path: /spec/template/spec/volumes/0, value: {name: corpus, configMap: {name: corpus-fixtures}}}
+  - target: {kind: CronJob, name: reindex}
+    patch: |-
+      - {op: replace, path: /spec/jobTemplate/spec/template/spec/volumes/0, value: {name: corpus, configMap: {name: corpus-fixtures}}}
+  - target: {kind: PersistentVolumeClaim, name: corpus}
+    patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: corpus

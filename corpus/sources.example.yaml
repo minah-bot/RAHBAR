@@ -69,3 +69,8 @@ documents:
   # and write must-abstain golden questions about it. Example: hostel rules.
   # - name: Prospectus - Transport and Hostel Facilities
   #   url: https://nu.edu.pk/Admissions/ProspectusUpload/Transport and Hostel Facilities.pdf
+
+# Optional per-document hint: leave a table of contents or cover out of the index.
+#   - name: Undergraduate Academic Rules August 2023
+#     ...
+#     exclude_pages: [1, 2, 3, 4, 5]
