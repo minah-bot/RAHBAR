@@ -31,7 +31,7 @@ the to was were what when where which who why will with you your me we they this
 search query document""".split())
 WORD = re.compile(r"[a-z0-9]+")
 PASSAGE = re.compile(
-    r'<passage id="(\d+)" source="([^"]*)" section="([^"]*)" page="([^"]*)"[^>]*>\n(.*?)\n</passage>',
+    r'<passage id="([^"]*)" source="([^"]*)" section="([^"]*)" page="([^"]*)"[^>]*>\n(.*?)\n</passage>',
     re.S)
 QUESTION = re.compile(r"<question>\n(.*?)\n</question>", re.S)
 
@@ -56,18 +56,17 @@ def answer(user: str) -> dict:
     for pid, source, section, page, body in PASSAGE.findall(user):
         overlap = len(qwords & set(content_words(html.unescape(body))))
         if overlap > best[0]:
-            best = (overlap, (source, section, page, html.unescape(body)))
+            best = (overlap, (html.unescape(pid), html.unescape(body)))
     if best[1] is None or best[0] < 2:
         return {"reasoning": "fake: no passage overlaps the question",
                 "answer": "The documents I have do not cover this question.",
                 "citations": [], "answered_from_context": False, "confidence": "low"}
-    source, section, page, body = best[1]
+    pid, body = best[1]
     sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n", body) if s.strip()]
     sentences = [s for s in sentences if not re.search(r"ignore (all )?previous", s, re.I)]
     top = max(sentences or [body], key=lambda s: len(qwords & set(content_words(s))))
     return {"reasoning": "fake: extractive", "answer": html.unescape(top),
-            "citations": [{"source": html.unescape(source), "section": html.unescape(section),
-                           "page": int(page) if page.isdigit() else None}],
+            "citations": [{"passage_id": pid}],
             "answered_from_context": True, "confidence": "medium"}
 
 
