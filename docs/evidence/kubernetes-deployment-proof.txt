@@ -1,0 +1,21 @@
+NAME                     READY   UP-TO-DATE   AVAILABLE   AGE    CONTAINERS   IMAGES                   SELECTOR
+deployment.apps/api      3/3     3            3           4h5m   api          rahbar-api:dev           app=api
+deployment.apps/chroma   1/1     1            1           4h5m   chroma       chromadb/chroma:1.0.12   app=chroma
+deployment.apps/redis    1/1     1            1           4h5m   redis        redis:7.4.2-alpine       app=redis
+deployment.apps/ui       2/2     2            2           4h5m   ui           rahbar-ui:dev            app=ui
+
+NAME                          READY   STATUS      RESTARTS   AGE     IP            NODE       NOMINATED NODE   READINESS GATES
+pod/api-7856fb875c-4tvc6      1/1     Running     0          83m     10.244.0.38   minikube   <none>           <none>
+pod/api-7856fb875c-d2dqs      1/1     Running     0          83m     10.244.0.40   minikube   <none>           <none>
+pod/api-7856fb875c-ms8n4      1/1     Running     0          83m     10.244.0.39   minikube   <none>           <none>
+pod/chroma-5db6587866-xzlbf   1/1     Running     0          3h50m   10.244.0.14   minikube   <none>           <none>
+pod/redis-6b9985dd6b-78xbh    1/1     Running     0          4h5m    10.244.0.8    minikube   <none>           <none>
+pod/reindex-manual-l5j8m      0/1     Completed   0          141m    10.244.0.23   minikube   <none>           <none>
+pod/ui-5b6647cd98-4bhxl       1/1     Running     0          110m    10.244.0.30   minikube   <none>           <none>
+pod/ui-5b6647cd98-xzvnh       1/1     Running     0          110m    10.244.0.31   minikube   <none>           <none>
+
+NAME             TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)    AGE    SELECTOR
+service/api      ClusterIP   10.99.0.21       <none>        8000/TCP   4h5m   app=api
+service/chroma   ClusterIP   10.101.157.81    <none>        8000/TCP   4h5m   app=chroma
+service/redis    ClusterIP   10.102.210.156   <none>        6379/TCP   4h5m   app=redis
+service/ui       ClusterIP   10.107.218.26    <none>        8080/TCP   4h5m   app=ui
