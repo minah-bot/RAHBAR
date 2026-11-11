@@ -73,7 +73,9 @@ jobs:
           push: false
           load: true
           tags: rahbar-${{ matrix.image }}:ci
-          build-args: GIT_SHA=${{ github.sha }}
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+            APK_REFRESH=${{ github.run_id }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
       - run: docker save rahbar-${{ matrix.image }}:ci -o ${{ matrix.image }}.tar
